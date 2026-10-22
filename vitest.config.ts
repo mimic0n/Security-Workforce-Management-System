@@ -7,6 +7,7 @@ export default defineConfig({
     environment: "node",
     setupFiles: ["./vitest.setup.ts"],
     include: ["**/*.spec.ts"],
+    fileParallelism: false,
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"]

@@ -51,3 +51,14 @@
   1. The mobile client first calls `POST /attendance/nonce { postId }` to get a short-lived nonce (TTL 45s) tied to `(guard_id, device_uid, post_id)`.
   2. Mobile scans the physical QR code (containing `qr_code_id`).
   3. Mobile submits `{ postId, nonce, scannedCode, deviceUid, gps }`. The server validates the active nonce, verifies the scanned code against `posts.qr_code_id`, verifies device binding, and marks the nonce used.
+
+### 2.7 Policy Time-Versioning & In-Memory Caching (M2)
+- **Issue**: §4 and §13.4 (Scenario C3) require temporary policy overrides (e.g. `headcount.fixed.MORNING = 15` for 3 days) to automatically expire when the VirtualClock jumps past `valid_to` without any code path restoring it.
+- **Default Resolution**:
+  - `ConfigService` evaluates `valid_from <= atTime AND (valid_to IS NULL OR valid_to > atTime) ORDER BY valid_from DESC LIMIT 1`.
+  - Temporary override rows keep their finite `valid_to`, while the base configuration keeps `valid_to = NULL`.
+  - When time passes `valid_to`, the query naturally resolves the base row.
+  - The cache maintains the policy versions in memory, and is invalidated on `policy.changed` events.
+  - Audit logs record both `before` and `after` states along with `actor_id` and timestamp from the injected `Clock`.
+  - `ScheduledJobsService` integrates with `Clock.schedule` in `SIM_MODE`, guaranteeing that jobs execute deterministically during `VirtualClock.jumpTo()`.
+
