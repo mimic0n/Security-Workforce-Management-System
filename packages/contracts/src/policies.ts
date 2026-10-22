@@ -24,21 +24,4 @@ export const PolicyPreviewSchema = z.object({
 });
 export type PolicyPreviewDto = z.infer<typeof PolicyPreviewSchema>;
 
-export interface ShiftStaffingCount {
-  fixed: number;
-  floatT1: number;
-  floatGen: number;
-  sup: number;
-  total: number;
-}
-
-export interface StaffingResult {
-  perShift: Record<ShiftCode, ShiftStaffingCount>;
-  slotsPerDay: number;
-  k: number;
-  required: number;
-  present: number;
-  gap: number;
-  gapPct: number;
-  sensitivity: { k: number; required: number; gap: number }[];
-}
+export * from "./staffing.js";

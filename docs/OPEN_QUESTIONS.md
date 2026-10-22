@@ -62,3 +62,20 @@
   - Audit logs record both `before` and `after` states along with `actor_id` and timestamp from the injected `Clock`.
   - `ScheduledJobsService` integrates with `Clock.schedule` in `SIM_MODE`, guaranteeing that jobs execute deterministically during `VirtualClock.jumpTo()`.
 
+### 2.8 Staffing Calculator & Requests (M3)
+- **Input Formats for Simulation**: `POST /staffing/simulate` supports both fully-qualified policy keys (`"headcount.fixed"`, `"relief.k_override"`, etc.) and ergonomic shorthands (`fixed`, `k_override`, `kOverride`, `present`, etc.). When partial shift headcount is provided (e.g. `{ fixed: { MORNING: 15 } }`), unspecified shifts default to their active base policy values rather than 0.
+- **Derived-K Calculation (`computeKFromAnnualDays`)**:
+  - Formula: `K = totalDays / (workDaysMax - leave - sick - training - other)`.
+  - Standard defaults: `totalDays = 365`, `workDaysMax = 313` (365 - 52 statutory weekly rest days).
+  - Net work days with `{leave: 12, sick: 6, training: 2}`: `313 - 12 - 6 - 2 = 293`.
+  - Output is formatted to 4 decimal places: `365 / 293 ≈ 1.2457`.
+  - Net working days must be strictly positive; otherwise an error is thrown.
+- **Headcount Gap & Sensitivity**:
+  - `gap = max(0, required - present)`. When `present >= required`, `gap = 0` and `gapPct = 0%`.
+  - Sensitivity analysis steps through `k_sensitivity_range` (default `[1.25, 1.40]`) in increments of `0.05`, generating discrete `{ k, required, gap }` pairs.
+  - Active guards are queried dynamically from the database (`WHERE active = true`), ignoring inactive/disabled guards unless an explicit `present` override is supplied.
+- **Staffing Requests Endpoint**:
+  - `GET /staffing/requests` supports query filters for `status` and `shift`.
+  - `POST /staffing/requests` records new requests using the injected `Clock.now()` for `created_at`, ensuring auditability and deterministic timeline coordination in simulation mode.
+
+
