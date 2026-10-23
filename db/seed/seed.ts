@@ -180,6 +180,7 @@ export async function runSeed(connectionString?: string) {
       ["attendance.tier1_escalate_after_sec", 120],
       ["attendance.violation_after_sec", 600],
       ["attendance.nonce_ttl_sec", 45],
+      ["attendance.clock_skew_tolerance_sec", 300],
       ["legal.min_rest_hours", 12],
       ["legal.max_work_days_week", 6],
       ["legal.ot_cap_month_min", 2400],

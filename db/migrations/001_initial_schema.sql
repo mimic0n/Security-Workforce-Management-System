@@ -161,6 +161,20 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
   reject_reason text
 );
 
+-- 11b. Attendance Nonces (single-use, bound to guard+device+post)
+CREATE TABLE IF NOT EXISTS attendance_nonces (
+  id bigserial PRIMARY KEY,
+  nonce text UNIQUE NOT NULL,
+  guard_id bigint NOT NULL REFERENCES guards(id) ON DELETE CASCADE,
+  device_uid text NOT NULL,
+  post_id text NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_attendance_nonces_lookup ON attendance_nonces (nonce, guard_id, post_id);
+
 -- 12. Site State
 CREATE TABLE IF NOT EXISTS site_state (
   site_id text PRIMARY KEY,

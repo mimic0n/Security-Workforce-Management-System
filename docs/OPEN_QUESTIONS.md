@@ -154,3 +154,35 @@
 - **Absences Reporting & Idempotency**:
   - `POST /absences` accepts an optional `Idempotency-Key` header (or `idemKey` field), preventing duplicate absences on client retries.
   - Creating an absence cancels active assignment, sets the post to `VACANT_ALERT`, appends a `state_event`, and automatically enqueues a priority dispatch task.
+
+### 2.12 Attendance, Nonce Binding, Debounce Filter & Escalation (M7)
+- **Single-Use Attendance Nonce & Device Binding**:
+  - `POST /attendance/nonce` generates a crypto UUID nonce with TTL defined by `attendance.nonce_ttl_sec` (default 45s).
+  - The nonce row in `attendance_nonces` explicitly binds `(guard_id, device_uid, post_id, expires_at)`.
+  - Check-in attempts with mismatched guards, posts, or devices are strictly rejected (`GUARD_MISMATCH`, `POST_MISMATCH`, `DEVICE_MISMATCH`).
+  - Upon successful verification or replay, the nonce row records `used_at = clock.now()`. Any subsequent attempt is rejected with `REPLAYED_NONCE`.
+- **QR HMAC Verification**:
+  - `qrToken` is computed as `HMAC-SHA256(secret, post.qr_code_id)`.
+  - Secret is sourced from environment variable `QR_HMAC_SECRET` or defaults to `swms-qr-secret-key-aeon-thanh-khe`.
+  - Scanned token must match the expected HMAC of the physical post QR code; otherwise rejected with `INVALID_QR_TOKEN`.
+- **Impossible-Travel Velocity Check**:
+  - Prevents physical check-in spoofing across non-contiguous posts.
+  - Compares client's current check-in timestamp against the guard's last accepted attendance log at a different post.
+  - The required travel duration is queried from `post_travel` matrix table.
+  - If `(current_sim_ts - last_sim_ts) < required_travel_minutes * 60`, check-in is rejected with `IMPOSSIBLE_TRAVEL`.
+- **GPS Debounce Filter & Median Position**:
+  - Implements a 5-sample sliding window calculating coordinate medians along both latitude and longitude to filter isolated GPS noise spikes.
+  - Readings with `accuracy_m > attendance.gps_accuracy_max_m` (default 30m) are immediately dropped and do not pollute the window.
+  - Employs hysteresis: leave threshold = `1.5 * geofence_m` (37.5m), enter threshold = `1.0 * geofence_m` (25m).
+  - An "outside" transition requires `attendance.out_samples_required` (default 3) consecutive median samples beyond the leave threshold.
+  - Brief GPS noise (< 3 samples or transient wander < 45s) suppresses alerts, keeping post status `OCCUPIED`.
+- **Two-Stage Presence Escalation (Scenario A2)**:
+  - `t0`: Confirmed presence loss triggers post transition from `OCCUPIED` to `UNCERTAIN` and issues a QR challenge to the guard.
+  - `t0 + 45s` (`attendance.uncertain_after_sec`): Pre-warm evaluates float ranking without issuing orders and notifies dispatcher.
+  - `t0 + 120s` (`attendance.tier1_escalate_after_sec` for Tier 1) / `max_vacant_sec` (for Tier 2): Escalate job applies `ESCALATE_TIMEOUT`, transitioning post to `VACANT_ALERT` and invoking `fillVacancy()`.
+  - `t0 + 600s` (`attendance.violation_after_sec`): Violation job checks for valid QR confirmation; if none exists, records incident `VIOLATION` (severity `HIGH`) in `incidents` table.
+  - QR confirmation at any time before violation restores post to `OCCUPIED` and cancels all pending escalation jobs.
+- **Offline Synchronization Queue**:
+  - Mobile check-in packets include client timestamp `timestamp`.
+  - Server accepts check-ins with client skew up to `attendance.clock_skew_tolerance_sec` (default 300s), flagging `lateSync: true` if skew exceeds 10s.
+  - Attempts exceeding skew tolerance are rejected with `CLOCK_SKEW_TOO_LARGE`.
