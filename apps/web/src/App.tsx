@@ -28,19 +28,83 @@ export const App: React.FC<AppProps> = ({
 
   const handleFireMock = async (eventType: string, payload: any) => {
     try {
-      await fetch(`${effectiveApiUrl}/state/events`, {
+      if (eventType === "CAMERA_MOTION") {
+        await fetch(`${effectiveApiUrl}/api/mock/camera-ai`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: authToken ? `Bearer ${authToken}` : "" },
+          body: JSON.stringify({ postId: payload?.postId || "G5", confidence: 0.95 })
+        });
+      } else if (eventType === "FIRE_ALARM") {
+        await fetch(`${effectiveApiUrl}/api/mock/fire-alarm`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: authToken ? `Bearer ${authToken}` : "" },
+          body: JSON.stringify({ zone: payload?.zone || "FLOOR1" })
+        });
+      } else if (eventType === "EMERGENCY_CLEARED") {
+        await fetch(`${effectiveApiUrl}/api/mock/fire-alarm/clear`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: authToken ? `Bearer ${authToken}` : "" }
+        });
+      } else {
+        await fetch(`${effectiveApiUrl}/state/events`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            kind: eventType,
+            payload
+          })
+        });
+      }
+    } catch (err) {
+      console.error("Failed to fire mock event:", err);
+    }
+  };
+
+  const handleRunScenario = async (scenarioId: string) => {
+    try {
+      await fetch(`${effectiveApiUrl}/sim/scenario/${scenarioId}/run`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-          kind: eventType,
-          payload
-        })
+          Authorization: authToken ? `Bearer ${authToken}` : ""
+        }
       });
     } catch (err) {
-      console.error("Failed to fire mock event:", err);
+      console.error("Failed to run scenario:", err);
+    }
+  };
+
+  const handleJumpClock = async (timeStr: string) => {
+    try {
+      const targetIso = `2026-11-07T${timeStr}:00+07:00`;
+      await fetch(`${effectiveApiUrl}/sim/clock/jump`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authToken ? `Bearer ${authToken}` : ""
+        },
+        body: JSON.stringify({ to: targetIso })
+      });
+    } catch (err) {
+      console.error("Failed to jump clock:", err);
+    }
+  };
+
+  const handleSetSpeed = async (speed: number) => {
+    try {
+      await fetch(`${effectiveApiUrl}/sim/clock/speed`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authToken ? `Bearer ${authToken}` : ""
+        },
+        body: JSON.stringify({ speed })
+      });
+    } catch (err) {
+      console.error("Failed to set speed:", err);
     }
   };
 
@@ -80,6 +144,9 @@ export const App: React.FC<AppProps> = ({
       {simMode && (
         <SimulationPanel
           onFireMock={handleFireMock}
+          onRunScenario={handleRunScenario}
+          onJumpClock={handleJumpClock}
+          onSetSpeed={handleSetSpeed}
         />
       )}
 

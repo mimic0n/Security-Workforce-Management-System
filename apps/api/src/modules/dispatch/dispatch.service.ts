@@ -642,7 +642,7 @@ export class DispatchService {
       );
 
       // If order targets a post, update post state via single entry point apply()
-      if (order.to_post && effectiveGuardId) {
+      if (order.to_post && effectiveGuardId && order.kind !== "REVIEW_MOTION") {
         const siteId = await this.getPrimarySiteId(tx);
         const postStateRes = await tx.query(`SELECT status FROM post_state WHERE post_id = $1;`, [order.to_post]);
         if (postStateRes.rows.length > 0 && postStateRes.rows[0].status === "NOT_ACTIVE") {

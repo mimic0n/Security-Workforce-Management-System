@@ -1,0 +1,42 @@
+{
+  "id": "A2",
+  "title": "Guard at P8 stops sending valid presence",
+  "passed": true,
+  "startedAt": "2026-11-07T00:30:00.000Z",
+  "finishedAt": "2026-11-07T07:41:00.000Z",
+  "durationMs": 25860000,
+  "assertions": [
+    {
+      "assert": "control.no_alert_at_30s",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "Control run with only 30s of GPS noise yields no alert"
+    },
+    {
+      "assert": "post.status_escalated",
+      "passed": true,
+      "expected": "VACANT_ALERT",
+      "actual": "VACANT_ALERT",
+      "message": "",
+      "description": "UNCERTAIN then VACANT_ALERT after 120s"
+    },
+    {
+      "assert": "post.status",
+      "passed": true,
+      "expected": "OCCUPIED",
+      "actual": "OCCUPIED",
+      "message": "",
+      "description": "Nearest relief fills P8 and P8 OCCUPIED within 5 min of loss"
+    },
+    {
+      "assert": "incident.exists",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "At +10 min a VIOLATION incident exists"
+    }
+  ]
+}

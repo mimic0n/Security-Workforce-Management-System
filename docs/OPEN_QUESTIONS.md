@@ -215,3 +215,22 @@
   - Font size >= 18px and high-contrast color scheme for low-tech guards.
   - Offline status pill displays "Đang kết nối" or "Ngoại tuyến" dynamically based on socket state.
   - When `siteMode === 'EMERGENCY'`, the entire mobile UI is replaced with a full-screen red evacuation instruction view.
+
+### 2.14 Simulation Harness, Mock Adapters & 8 Scenarios (M9)
+- **Port/Adapter Pattern Architecture (§13.2)**:
+  - Mock adapters (`MockCameraAiAdapter`, `MockFireAlarmAdapter`, `MockGpsStreamAdapter`, `MockNotifyAdapter`) simulate external devices with in-memory stores and direct dispatch/event integration.
+  - Real adapters (`RealCameraAiAdapter`, `RealFireAlarmAdapter`, `RealGpsStreamAdapter`, `RealNotifyAdapter`) exist as empty skeletons with documented production connection parameters (e.g. RTSP/WebRTC AI stream URLs, MQTT/BACnet fire alarm gateways, FCM/SMS gateways), fulfilling Rule #7.
+  - REST endpoints mounted on `/api/mock/*` allow dashboard and simulation users to inject device events on demand.
+- **Symbolic Guard Reference Resolution**:
+  - `owner:POST:SHIFT` resolves dynamically to the guard assigned to that post and shift in `assignments` or `post_state`.
+  - `float:TIER1_RELIEF#N` resolves to the Nth 1-based `TIER1_RELIEF` float in `guards`.
+  - Symbolic names allow scenarios to run deterministically across varied seed datasets.
+- **Early Call-In & Meal Replan Coupling (Scenario A1)**:
+  - When relief floats are pulled to cover vacant Tier 1 posts (e.g. G4), `MealPlannerService` checks available floats on duty.
+  - When available relief floats are depleted (< 2), `MealPlannerService.replan` returns `feasible: false`.
+  - In response, `DispatchService` triggers an `EARLY_CALL_IN` evaluation, selecting the best off-shift / afternoon guard passing LegalGuard and logging rejected candidates with rest violation details.
+- **Time-Versioned Subkey Policy Overrides (Scenario C3)**:
+  - Scenario C3 exercises temporary policy override `headcount.fixed.MORNING = 15` valid for 3 days.
+  - To support nested policy keys, `ActionDispatcher` inserts both the specific key and the composite `headcount.fixed` policy version row with `valid_from` and `valid_to`, invalidating the cache.
+  - Virtual clock queries naturally return 19 during the window, and revert to 18 after expiration with zero background restore jobs.
+

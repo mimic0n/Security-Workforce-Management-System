@@ -1,0 +1,58 @@
+{
+  "id": "A1",
+  "title": "Three guards call in sick, Saturday morning",
+  "passed": true,
+  "startedAt": "2026-01-01T00:00:00.000Z",
+  "finishedAt": "2026-11-07T00:30:00.000Z",
+  "durationMs": 26785800000,
+  "assertions": [
+    {
+      "assert": "post.status",
+      "passed": true,
+      "expected": "OCCUPIED",
+      "actual": "OCCUPIED",
+      "message": "",
+      "description": "G4 occupied by remaining relief float within 15 min"
+    },
+    {
+      "assert": "post.status",
+      "passed": true,
+      "expected": "COVERED_BY_PAIR",
+      "actual": "COVERED_BY_PAIR",
+      "message": "",
+      "description": "P3 covered by pair P2"
+    },
+    {
+      "assert": "meal_plan.replan_status",
+      "passed": true,
+      "expected": "INFEASIBLE_SUGGEST_CALL_IN",
+      "actual": "INFEASIBLE_SUGGEST_CALL_IN",
+      "message": "",
+      "description": "Meal-plan replan with 1 float is infeasible"
+    },
+    {
+      "assert": "proposal.exists",
+      "passed": true,
+      "expected": true,
+      "actual": "EARLY_CALL_IN",
+      "message": "",
+      "description": "An EARLY_CALL_IN proposal to an AFTERNOON guard that passes LegalGuard (and rejected listed in rejected)"
+    },
+    {
+      "assert": "tier1.vacant_seconds",
+      "passed": true,
+      "expected": 0,
+      "actual": 0,
+      "message": "",
+      "description": "Tier 1 vacant seconds = 0"
+    },
+    {
+      "assert": "assignments.no_double_assigned",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "No guard double-assigned"
+    }
+  ]
+}

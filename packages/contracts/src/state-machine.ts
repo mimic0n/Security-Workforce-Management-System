@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PostTierEnum, PostStatusEnum, ShiftCodeEnum, SiteModeEnum } from "./index.js";
+import { PostTierEnum, PostStatusEnum, ShiftCodeEnum, SiteModeEnum } from "./enums.js";
 
 // All state machine event types according to SWMS Build Spec §6 & Appendix A
 export const EventTypeEnum = z.enum([

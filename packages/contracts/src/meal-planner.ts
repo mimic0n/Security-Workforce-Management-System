@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PostTierEnum } from "./index.js";
+import { PostTierEnum } from "./enums.js";
 
 export const MealPlannerPostSchema = z.object({
   id: z.string().min(1),

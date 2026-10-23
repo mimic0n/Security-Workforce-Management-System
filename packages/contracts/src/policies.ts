@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ShiftCodeEnum, type ShiftCode } from "./index.js";
+import { ShiftCodeEnum, type ShiftCode } from "./enums.js";
 
 export const PolicySchema = z.object({
   key: z.string().min(1),

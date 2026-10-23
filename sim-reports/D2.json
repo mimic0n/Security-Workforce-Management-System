@@ -1,0 +1,58 @@
+{
+  "id": "D2",
+  "title": "Fire alarm on Floor 1",
+  "passed": true,
+  "startedAt": "2026-11-07T19:01:00.000Z",
+  "finishedAt": "2026-11-07T04:30:00.000Z",
+  "durationMs": -52260000,
+  "assertions": [
+    {
+      "assert": "site.mode",
+      "passed": true,
+      "expected": "EMERGENCY",
+      "actual": "EMERGENCY",
+      "message": "",
+      "description": "site_state.mode=EMERGENCY within 1s sim time"
+    },
+    {
+      "assert": "jobs.timers_cancelled",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "All meal/presence jobs cancelled"
+    },
+    {
+      "assert": "socket.emergency_started_broadcast",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "emergency.started reaches every connected socket"
+    },
+    {
+      "assert": "mobile.evacuation_state",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "Mobile test client shows evacuation state"
+    },
+    {
+      "assert": "alerts.vacant_suppressed",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "No VACANT alerts fire during emergency"
+    },
+    {
+      "assert": "site.mode_cleared",
+      "passed": true,
+      "expected": "NORMAL",
+      "actual": "NORMAL",
+      "message": "",
+      "description": "After EMERGENCY_CLEARED per-post logic resumes correctly"
+    }
+  ]
+}

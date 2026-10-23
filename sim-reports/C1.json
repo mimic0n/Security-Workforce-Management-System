@@ -1,0 +1,42 @@
+{
+  "id": "C1",
+  "title": "Full morning (18 present), normal day",
+  "passed": true,
+  "startedAt": "2026-11-01T23:00:00.000Z",
+  "finishedAt": "2026-11-07T03:00:00.000Z",
+  "durationMs": 446400000,
+  "assertions": [
+    {
+      "assert": "meal_plan.slots_count",
+      "passed": true,
+      "expected": 7,
+      "actual": 7,
+      "message": "",
+      "description": "Break plan generated for 7 Tier-1 posts"
+    },
+    {
+      "assert": "meal_plan.state_transitions_valid",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "Executes via state machine (HANDOVER_PENDING -> RELIEVED_FOR_MEAL -> OCCUPIED for each)"
+    },
+    {
+      "assert": "alerts.count",
+      "passed": true,
+      "expected": 0,
+      "actual": 0,
+      "message": "",
+      "description": "Zero alerts"
+    },
+    {
+      "assert": "incidents.count",
+      "passed": true,
+      "expected": 0,
+      "actual": 0,
+      "message": "",
+      "description": "Zero incidents"
+    }
+  ]
+}

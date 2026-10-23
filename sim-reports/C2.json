@@ -1,0 +1,34 @@
+{
+  "id": "C2",
+  "title": "Peak weekend load in event zone",
+  "passed": true,
+  "startedAt": "2026-11-07T03:00:00.000Z",
+  "finishedAt": "2026-11-07T08:05:00.000Z",
+  "durationMs": 18300000,
+  "assertions": [
+    {
+      "assert": "proposal.exists",
+      "passed": true,
+      "expected": true,
+      "actual": "REINFORCE",
+      "message": "",
+      "description": "System proposes moving Tier-2 guards from low-load posts to high-load zone"
+    },
+    {
+      "assert": "proposal.source_is_tier2",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "Reinforcement candidate never touches Tier 1"
+    },
+    {
+      "assert": "assignments.source_dispatch_updated",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "Accepted by dispatcher -> assignments updated with source=DISPATCH"
+    }
+  ]
+}

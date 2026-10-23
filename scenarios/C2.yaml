@@ -1,0 +1,27 @@
+id: C2
+title: Peak weekend load in event zone
+seed:
+  date: "2026-11-07"
+  present: 45
+  fixtureSet: full-roster
+  policyOverrides: {}
+timeline:
+  - at: "2026-11-07T15:00:00+07:00"
+    do: footfall.increase
+    with:
+      zone: hall
+      multiplier: 2.0
+  - at: "2026-11-07T15:05:00+07:00"
+    do: proposal.accept
+    with:
+      kind: REINFORCE
+expect:
+  - assert: proposal.exists
+    kind: REINFORCE
+    description: "System proposes moving Tier-2 guards from low-load posts to high-load zone"
+  - assert: proposal.source_is_tier2
+    equals: true
+    description: "Reinforcement candidate never touches Tier 1"
+  - assert: assignments.source_dispatch_updated
+    equals: true
+    description: "Accepted by dispatcher -> assignments updated with source=DISPATCH"

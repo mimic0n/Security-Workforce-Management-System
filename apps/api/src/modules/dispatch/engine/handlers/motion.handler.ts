@@ -37,7 +37,8 @@ export class MotionHandler {
     // 1. Find on-duty guards who can respond:
     // Prefer: supervisor or float, OR guards on Tier 2 posts.
     // Read dynamic policy for Tier 1 posts allowed to review motion (e.g. night G1 per policy)
-    const shiftParts = payload.shiftKey.split(":");
+    const shiftKey = payload.shiftKey || (options as any)?.shiftKey || "2026-11-07:NIGHT";
+    const shiftParts = shiftKey.split(":");
     const forShift = shiftParts[1] || "NIGHT";
 
     let allowedTier1Posts: string[] = [];

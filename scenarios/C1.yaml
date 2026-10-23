@@ -1,0 +1,29 @@
+id: C1
+title: Full morning (18 present), normal day
+seed:
+  date: "2026-11-07"
+  present: 18
+  fixtureSet: full-roster
+  policyOverrides: {}
+timeline:
+  - at: "2026-11-07T06:00:00+07:00"
+    do: meal_plan.generate
+    with:
+      shift: MORNING
+  - at: "2026-11-07T10:00:00+07:00"
+    do: meal_plan.execute
+    with:
+      shift: MORNING
+expect:
+  - assert: meal_plan.slots_count
+    equals: 7
+    description: "Break plan generated for 7 Tier-1 posts"
+  - assert: meal_plan.state_transitions_valid
+    equals: true
+    description: "Executes via state machine (HANDOVER_PENDING -> RELIEVED_FOR_MEAL -> OCCUPIED for each)"
+  - assert: alerts.count
+    equals: 0
+    description: "Zero alerts"
+  - assert: incidents.count
+    equals: 0
+    description: "Zero incidents"

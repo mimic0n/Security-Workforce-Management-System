@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ShiftCodeEnum, type ShiftCode } from "./index.js";
+import { ShiftCodeEnum, type ShiftCode } from "./enums.js";
 
 // Staffing counts per shift
 export const ShiftStaffingCountSchema = z.object({

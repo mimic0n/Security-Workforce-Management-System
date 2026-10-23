@@ -1,0 +1,58 @@
+{
+  "id": "D1",
+  "title": "Night camera AI motion at G5",
+  "passed": true,
+  "startedAt": "2026-11-11T02:00:00.000Z",
+  "finishedAt": "2026-11-07T19:01:00.000Z",
+  "durationMs": -284340000,
+  "assertions": [
+    {
+      "assert": "socket.received_only",
+      "passed": true,
+      "expected": true,
+      "actual": "guard:G01",
+      "message": "",
+      "description": "Only guard at G1 receives REVIEW_MOTION on guard:{id}"
+    },
+    {
+      "assert": "socket.other_guards_empty",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "Other guards sockets receive nothing"
+    },
+    {
+      "assert": "dashboard.alert_shown",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "Dashboard shows alert"
+    },
+    {
+      "assert": "tier1.covered_per_policy",
+      "passed": true,
+      "expected": true,
+      "actual": "OCCUPIED",
+      "message": "",
+      "description": "G1 remains covered per rules"
+    },
+    {
+      "assert": "incident.exists",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "Incident MOTION opened"
+    },
+    {
+      "assert": "order.acked",
+      "passed": true,
+      "expected": true,
+      "actual": true,
+      "message": "",
+      "description": "Ack recorded"
+    }
+  ]
+}

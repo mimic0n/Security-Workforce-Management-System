@@ -1,0 +1,37 @@
+id: A2
+title: Guard at P8 stops sending valid presence
+seed:
+  date: "2026-11-07"
+  present: 45
+  fixtureSet: full-roster
+  policyOverrides: {}
+timeline:
+  - at: "2026-11-07T14:30:00+07:00"
+    do: gps.stream.control_noise
+    with:
+      guard: "owner:P8:AFTERNOON"
+      durationSec: 30
+  - at: "2026-11-07T14:30:30+07:00"
+    do: gps.stream.loss
+    with:
+      guard: "owner:P8:AFTERNOON"
+      durationSec: 600
+expect:
+  - assert: control.no_alert_at_30s
+    equals: true
+    description: "Control run with only 30s of GPS noise yields no alert"
+  - within: "120s"
+    assert: post.status_escalated
+    post: P8
+    equals: VACANT_ALERT
+    description: "UNCERTAIN then VACANT_ALERT after 120s"
+  - within: "5m"
+    assert: post.status
+    post: P8
+    equals: OCCUPIED
+    description: "Nearest relief fills P8 and P8 OCCUPIED within 5 min of loss"
+  - within: "10m"
+    assert: incident.exists
+    kind: VIOLATION
+    post: P8
+    description: "At +10 min a VIOLATION incident exists"

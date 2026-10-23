@@ -1,0 +1,38 @@
+id: D1
+title: Night camera AI motion at G5
+seed:
+  date: "2026-11-07"
+  present: 45
+  fixtureSet: night-shift
+  policyOverrides: {}
+timeline:
+  - at: "2026-11-08T02:00:00+07:00"
+    do: camera.motion
+    with:
+      post: G5
+      confidence: 0.95
+  - at: "2026-11-08T02:01:00+07:00"
+    do: order.ack
+    with:
+      kind: REVIEW_MOTION
+expect:
+  - assert: socket.received_only
+    recipient: "guard:G01"
+    event: REVIEW_MOTION
+    description: "Only guard at G1 receives REVIEW_MOTION on guard:{id}"
+  - assert: socket.other_guards_empty
+    equals: true
+    description: "Other guards sockets receive nothing"
+  - assert: dashboard.alert_shown
+    equals: true
+    description: "Dashboard shows alert"
+  - assert: tier1.covered_per_policy
+    equals: true
+    description: "G1 remains covered per rules"
+  - assert: incident.exists
+    kind: MOTION
+    post: G5
+    description: "Incident MOTION opened"
+  - assert: order.acked
+    equals: true
+    description: "Ack recorded"

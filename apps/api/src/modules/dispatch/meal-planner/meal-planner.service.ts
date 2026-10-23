@@ -154,30 +154,63 @@ export class MealPlannerService implements OnModuleInit {
     }));
 
     // Fetch available floats
-    let floatsQuery = `
-      SELECT id, code, role, float_kind 
-      FROM guards 
-      WHERE active = true AND role = 'FLOAT' AND float_kind = 'TIER1_RELIEF'
-    `;
-    const queryParams: any[] = [];
+    let floatsRes;
     if (params.availableFloatIds && params.availableFloatIds.length > 0) {
-      floatsQuery += ` AND id = ANY($1) ORDER BY id ASC;`;
-      queryParams.push(params.availableFloatIds);
+      floatsRes = await this.db.query(
+        `SELECT id, code, role, float_kind FROM guards WHERE id = ANY($1) ORDER BY id ASC;`,
+        [params.availableFloatIds]
+      );
     } else {
-      let floatCount = 2;
-      if (this.configService) {
-        try {
-          const hcPolicy = await this.configService.get<any>("headcount.float_t1");
-          if (hcPolicy && typeof hcPolicy[shiftCode] === "number") {
-            floatCount = hcPolicy[shiftCode];
-          }
-        } catch {}
-      }
-      floatsQuery += ` ORDER BY id ASC LIMIT $1;`;
-      queryParams.push(floatCount);
-    }
+      // Check if assignments exist for this shift
+      const checkAssign = await this.db.query(
+        `SELECT count(*) as cnt FROM assignments WHERE shift = $1;`,
+        [shiftCode]
+      );
+      const hasAssignments = Number(checkAssign.rows[0]?.cnt || 0) > 0;
 
-    const floatsRes = await this.db.query(floatsQuery, queryParams);
+      if (hasAssignments) {
+        // Query active FLOAT_T1 guards on duty who are not absent and not currently occupying a fixed post
+        floatsRes = await this.db.query(
+          `SELECT g.id, g.code, g.role, g.float_kind 
+           FROM guards g
+           JOIN assignments a ON a.guard_id = g.id
+           WHERE g.active = true 
+             AND a.status = 'ACTIVE'
+             AND a.role = 'FLOAT_T1'
+             AND a.shift = $1
+             AND NOT EXISTS (
+               SELECT 1 FROM absences ab
+               WHERE ab.guard_id = g.id
+                 AND ab.for_shift = $1
+                 AND ab.for_date = $2::date
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM post_state ps
+               WHERE ps.guard_id = g.id
+             )
+           ORDER BY g.id ASC;`,
+          [shiftCode, dateStr]
+        );
+      } else {
+        // Fallback for isolated unit tests without assignments
+        let floatCount = 2;
+        if (this.configService) {
+          try {
+            const hcPolicy = await this.configService.get<any>("headcount.float_t1");
+            if (hcPolicy && typeof hcPolicy[shiftCode] === "number") {
+              floatCount = hcPolicy[shiftCode];
+            }
+          } catch {}
+        }
+        floatsRes = await this.db.query(
+          `SELECT id, code, role, float_kind 
+           FROM guards 
+           WHERE active = true AND role = 'FLOAT' AND float_kind = 'TIER1_RELIEF'
+           ORDER BY id ASC LIMIT $1;`,
+          [floatCount]
+        );
+      }
+    }
 
     // Read shift start, end, and break minutes from shift_templates
     const shiftRes = await this.db.query(

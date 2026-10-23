@@ -19,6 +19,7 @@ import { DispatchQueueService } from "./engine/queue.service.js";
 import { DispatchController } from "./dispatch.controller.js";
 import { AbsencesService } from "./absences.service.js";
 import { AbsencesController } from "./absences.controller.js";
+import { IncidentsController } from "./incidents.controller.js";
 
 @Module({
   imports: [DatabaseModule, ClockModule, EventsModule, PoliciesModule],
@@ -40,7 +41,8 @@ import { AbsencesController } from "./absences.controller.js";
     BreakPlansController,
     LegalGuardController,
     DispatchController,
-    AbsencesController
+    AbsencesController,
+    IncidentsController
   ],
   exports: [
     DispatchService,

@@ -228,11 +228,15 @@ export class DispatchQueueService {
               idemKey: task.idem_key
             });
           } else if (task.kind === "CAMERA_MOTION") {
-            taskResult = await this.motionHandler.handle(client, payload, {
-              siteId,
-              idemKey: task.idem_key,
-              now
-            });
+            taskResult = await this.motionHandler.handle(
+              client,
+              { ...payload, shiftKey: payload.shiftKey || task.shift_key },
+              {
+                siteId,
+                idemKey: task.idem_key,
+                now
+              }
+            );
           } else if (task.kind === "REPLAN_MEAL") {
             taskResult = await this.mealPlannerService.replan({
               shiftKey: task.shift_key,

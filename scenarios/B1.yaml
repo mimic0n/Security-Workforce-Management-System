@@ -1,0 +1,28 @@
+id: B1
+title: Present 45 of 60 across the week
+seed:
+  date: "2026-11-02"
+  present: 45
+  fixtureSet: understaffed-week
+  policyOverrides: {}
+timeline:
+  - at: "2026-11-02T06:00:00+07:00"
+    do: staffing.evaluate
+    with:
+      siteId: AEON_THANH_KHE_F1
+expect:
+  - assert: tier1.all_staffed
+    equals: true
+    description: "7 Tier-1 posts fully staffed in every shift of a simulated week"
+  - assert: tier2.merged_pairs_count
+    gte: 3
+    description: "3 Tier-2 pairs merged (P3->P2, P4->P5, G2->G3)"
+  - assert: staffing_requests.qty
+    equals: 15
+    description: "staffing_requests created with qty = gap (15)"
+  - assert: kpi.gap
+    equals: 15
+    description: "Dashboard KPI shows gap 15"
+  - assert: kpi.gap_percent
+    equals: 25
+    description: "Dashboard KPI shows gap percent 25%"

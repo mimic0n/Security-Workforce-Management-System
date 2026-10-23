@@ -5,6 +5,7 @@ interface SimulationPanelProps {
   onJumpClock?: (timeIso: string) => void;
   onSetSpeed?: (speed: number) => void;
   onFireMock?: (eventType: string, payload: any) => void;
+  onRunScenario?: (scenarioId: string) => void;
   currentSimTime?: string;
 }
 
@@ -12,6 +13,7 @@ export const SimulationPanel: React.FC<SimulationPanelProps> = ({
   onJumpClock,
   onSetSpeed,
   onFireMock,
+  onRunScenario,
   currentSimTime
 }) => {
   const [selectedScenario, setSelectedScenario] = useState("A1");
@@ -69,6 +71,22 @@ export const SimulationPanel: React.FC<SimulationPanelProps> = ({
             <option value="D1">D1 — Chuyển động ban đêm G5</option>
             <option value="D2">D2 — Báo động cháy Tầng 1</option>
           </select>
+          <button
+            data-testid="run-scenario-btn"
+            onClick={() => onRunScenario && onRunScenario(selectedScenario)}
+            style={{
+              background: "#2563eb",
+              color: "#fff",
+              border: "none",
+              borderRadius: "6px",
+              padding: "4px 10px",
+              fontSize: "0.85rem",
+              fontWeight: 600,
+              cursor: "pointer"
+            }}
+          >
+            {vi.simulation.runScenario}
+          </button>
         </div>
 
         {/* Speed */}

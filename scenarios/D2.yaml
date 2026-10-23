@@ -1,0 +1,35 @@
+id: D2
+title: Fire alarm on Floor 1
+seed:
+  date: "2026-11-07"
+  present: 45
+  fixtureSet: full-roster
+  policyOverrides: {}
+timeline:
+  - at: "2026-11-07T11:00:00+07:00"
+    do: fire_alarm.trigger
+    with:
+      zone: FLOOR1
+  - at: "2026-11-07T11:30:00+07:00"
+    do: fire_alarm.clear
+    with: {}
+expect:
+  - within: "1s"
+    assert: site.mode
+    equals: EMERGENCY
+    description: "site_state.mode=EMERGENCY within 1s sim time"
+  - assert: jobs.timers_cancelled
+    equals: true
+    description: "All meal/presence jobs cancelled"
+  - assert: socket.emergency_started_broadcast
+    equals: true
+    description: "emergency.started reaches every connected socket"
+  - assert: mobile.evacuation_state
+    equals: true
+    description: "Mobile test client shows evacuation state"
+  - assert: alerts.vacant_suppressed
+    equals: true
+    description: "No VACANT alerts fire during emergency"
+  - assert: site.mode_cleared
+    equals: NORMAL
+    description: "After EMERGENCY_CLEARED per-post logic resumes correctly"

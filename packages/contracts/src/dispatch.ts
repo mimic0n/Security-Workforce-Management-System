@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ShiftCodeEnum, PostTierEnum } from "./index.js";
+import { ShiftCodeEnum, PostTierEnum } from "./enums.js";
 
 // Priority enum/values per §8.1:
 // EMERGENCY=0, TIER1_VACANCY=1, MEAL=2, TIER2_VACANCY=3, OTHER=4

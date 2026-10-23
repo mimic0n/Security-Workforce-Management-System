@@ -1,0 +1,38 @@
+id: A1
+title: Three guards call in sick, Saturday morning
+seed:
+  date: "2026-11-07"
+  present: 45
+  fixtureSet: full-roster
+  policyOverrides: {}
+timeline:
+  - at: "2026-11-07T07:30:00+07:00"
+    do: absence.report
+    with:
+      guards:
+        - "owner:G4:MORNING"
+        - "owner:P3:MORNING"
+        - "float:TIER1_RELIEF#1"
+expect:
+  - within: "15m"
+    assert: post.status
+    post: G4
+    equals: OCCUPIED
+    description: "G4 occupied by remaining relief float within 15 min"
+  - assert: post.status
+    post: P3
+    equals: COVERED_BY_PAIR
+    description: "P3 covered by pair P2"
+  - assert: meal_plan.replan_status
+    equals: INFEASIBLE_SUGGEST_CALL_IN
+    description: "Meal-plan replan with 1 float is infeasible"
+  - assert: proposal.exists
+    kind: EARLY_CALL_IN
+    passes_legal_guard: true
+    description: "An EARLY_CALL_IN proposal to an AFTERNOON guard that passes LegalGuard (and rejected listed in rejected)"
+  - assert: tier1.vacant_seconds
+    lte: 0
+    description: "Tier 1 vacant seconds = 0"
+  - assert: assignments.no_double_assigned
+    equals: true
+    description: "No guard double-assigned"

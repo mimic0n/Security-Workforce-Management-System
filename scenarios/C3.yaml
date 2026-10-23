@@ -1,0 +1,32 @@
+id: C3
+title: Policy override headcount.fixed.MORNING = 15 valid for 3 days
+seed:
+  date: "2026-11-07"
+  present: 45
+  fixtureSet: full-roster
+  policyOverrides: {}
+timeline:
+  - at: "2026-11-07T08:00:00+07:00"
+    do: policy.override
+    with:
+      key: headcount.fixed.MORNING
+      value: 15
+      validDays: 3
+  - at: "2026-11-08T08:00:00+07:00"
+    do: clock.jump
+    with:
+      to: "2026-11-08T08:00:00+07:00"
+  - at: "2026-11-11T09:00:00+07:00"
+    do: clock.jump
+    with:
+      to: "2026-11-11T09:00:00+07:00"
+expect:
+  - assert: staffing.during_window
+    equals: 19
+    description: "During window GET /staffing/calc shows 19"
+  - assert: staffing.after_window
+    equals: 18
+    description: "After VirtualClock jumps past valid_to shows 18 with no code path restoring it"
+  - assert: audit_log.policy_change_recorded
+    equals: true
+    description: "Audit log has the change"

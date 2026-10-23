@@ -1,6 +1,6 @@
 export interface GpsSample {
   guardId: number;
-  postId: string;
+  postId?: string;
   lat: number;
   lon: number;
   accuracy: number;
