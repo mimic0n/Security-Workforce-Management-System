@@ -1,0 +1,60 @@
+{
+  "appTitle": "Hệ thống Quản lý Lực lượng Bảo vệ (SWMS)",
+  "subtitle": "AEON Mall Thanh Khê - Tầng 1",
+  "disclaimer": "Hệ thống hỗ trợ điều hành mô phỏng — Không thay thế quy trình PCCC/Cứu hộ thực tế",
+  "roles": {
+    "guard": "Bảo vệ",
+    "float": "Tiếp viên cơ động",
+    "supervisor": "Giám sát ca",
+    "dispatcher": "Điều phối viên",
+    "manager": "Quản lý",
+    "admin": "Quản trị viên"
+  },
+  "statuses": {
+    "OCCUPIED": "Đang trực",
+    "HANDOVER_PENDING": "Chờ bàn giao",
+    "RELIEVED_FOR_MEAL": "Đang nghỉ ăn",
+    "VACANT_ALERT": "BÁO ĐỘNG TRỐNG VỊ TRÍ",
+    "VACANT_PLANNED": "Trống theo kế hoạch",
+    "COVERED_BY_PAIR": "Ghép cặp bảo vệ",
+    "UNCERTAIN": "Chưa xác định vị trí",
+    "NOT_ACTIVE": "Không hoạt động"
+  },
+  "kpi": {
+    "presentRequired": "Quân số hiện diện / Định biên",
+    "headcountGap": "Thiếu hụt định biên",
+    "tier1VacantMinutes": "Thời gian trống Tier 1 hôm nay",
+    "openIncidents": "Sự cố đang mở",
+    "wsLatency": "Độ trễ WebSocket (p95)"
+  },
+  "floorMap": {
+    "title": "Sơ đồ Bố trí Vị trí Trực — Tầng 1",
+    "tier1Label": "Cấp 1 (Zero-Vacancy)",
+    "tier2Label": "Cấp 2",
+    "activeGuards": "Bảo vệ đang trực",
+    "clickPrompt": "Nhấp vào vị trí trực để xem lịch sử sự kiện"
+  },
+  "incidents": {
+    "title": "Hàng đợi Sự cố & Đề xuất Điều phối",
+    "empty": "Không có sự cố nào đang chờ xử lý",
+    "explain": "Giải trình lựa chọn điều phối:",
+    "rejectedGuards": "Ứng viên bị loại:",
+    "approve": "Duyệt lệnh",
+    "override": "Can thiệp thủ công"
+  },
+  "simulation": {
+    "title": "Bảng Điều khiển Mô phỏng (SIM_MODE)",
+    "clock": "Đồng hồ ảo",
+    "speed": "Tốc độ",
+    "jumpTo": "Nhảy đến mốc giờ:",
+    "fireMock": "Kích hoạt sự kiện giả lập:",
+    "motionAlert": "Cảnh báo chuyển động Camera",
+    "fireAlarm": "Báo cháy Tầng 1",
+    "clearFire": "Hủy báo cháy (Bình thường)"
+  },
+  "emergency": {
+    "banner": "BÁO ĐỘNG KHẨN CẤP: TOÀN BỘ MẶT BẰNG SƠ TÁN",
+    "instruction": "Tất cả vị trí tạm dừng quy trình thường, hướng dẫn khách hàng di chuyển về phía cửa thoát hiểm gần nhất.",
+    "headcountStatus": "Kiểm đếm nhân sự sơ tán"
+  }
+}

@@ -186,3 +186,32 @@
   - Mobile check-in packets include client timestamp `timestamp`.
   - Server accepts check-ins with client skew up to `attendance.clock_skew_tolerance_sec` (default 300s), flagging `lateSync: true` if skew exceeds 10s.
   - Attempts exceeding skew tolerance are rejected with `CLOCK_SKEW_TOO_LARGE`.
+
+### 2.13 Realtime Gateway, Web Dashboard & Mobile PWA (M8)
+- **Role-Based Room Isolation & Handshake Authentication**:
+  - Socket.IO connection handshake validates JWT tokens using middleware (`server.use(...)`). Invalid, malformed, or missing tokens reject the connection at the transport handshake, emitting a `connect_error` to the client.
+  - Sockets automatically join rooms strictly partitioned by user role and identity (§11):
+    - `emergency:{siteId}`: All authenticated connections automatically join (highest priority evacuation broadcast).
+    - `dashboard:{siteId}`: Accessible only to `DISPATCHER`, `MANAGER`, and `ADMIN` roles. Guard and float roles are strictly forbidden from joining or eavesdropping on dashboard state deltas.
+    - `guard:{guardId}`: Private room joined only by the authenticated guard corresponding to `user.guard_id`. Private dispatch orders, break locks, and QR challenges are delivered exclusively here.
+    - `shift:{siteId}:{shiftKey}`: Joined when `shiftKey` is provided in query params or assigned.
+- **Outbox Routing to Socket.IO Channels**:
+  - `OutboxService.publishPending()` delivers committed envelopes to `EventBusService`, which `GatewayBroadcastService` immediately routes:
+    - Emergency events (`emergency.started`, `emergency.cleared`) route to `emergency:{siteId}`.
+    - Dashboard topics (`post.state_changed`, `kpi.updated`, `incident.opened/closed`, `dispatch.proposed/executed/override`, `site.mode_changed`, `staffing.updated`) route to `dashboard:{siteId}`.
+    - Guard private topics (`dispatch.order`, `schedule.updated`, `break.locked/unlocked`, `qr.challenge`) route to `guard:{guardId}`.
+    - When `FLOAT_CHECKIN` transitions a post to `RELIEVED_FOR_MEAL`, `DispatchService` automatically enqueues `break.unlocked` for the original guard (`post.guard_id`).
+    - When `MEAL_WINDOW_OPEN` transitions a post to `HANDOVER_PENDING`, `break.locked` is enqueued for the original guard.
+    - Sockets receive both `envelope.type` (e.g. `post.state_changed`) and `"message"` for comprehensive listener compatibility.
+- **Monotonic Sequence Gap Detection & Reconnection Synchronization**:
+  - Client stores `lastSeq`. When an envelope arrives with `seq > lastSeq + 1` (message dropped or out of sequence), or upon initial connect / reconnect, the client automatically queries `GET /state/snapshot`.
+  - The snapshot delivers `{ site, posts, lastSeq }`, instantly resynchronizing local state and updating `lastSeq`.
+- **Two-Way Handshake Lock on Mobile PWA**:
+  - Guard break button is disabled and locked with Vietnamese explanation ("Chờ tiếp viên cơ động bàn giao") while on duty in `OCCUPIED` state without relief.
+  - Any direct REST call to `POST /state/break/start` while in `OCCUPIED` state is rejected with HTTP 400 Problem Details.
+  - When relief checks in (`FLOAT_CHECKIN`), `break.unlocked` is delivered over WebSocket, the button enables immediately, and calling `POST /state/break/start` authorizes the break.
+- **Mobile PWA Accessibility & Emergency Override**:
+  - Large touch targets: Check-in button has height 72px (>= 64px), break button 64px.
+  - Font size >= 18px and high-contrast color scheme for low-tech guards.
+  - Offline status pill displays "Đang kết nối" or "Ngoại tuyến" dynamically based on socket state.
+  - When `siteMode === 'EMERGENCY'`, the entire mobile UI is replaced with a full-screen red evacuation instruction view.

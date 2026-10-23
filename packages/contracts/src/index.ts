@@ -178,4 +178,5 @@ export * from "./meal-planner.js";
 export * from "./legal-guard.js";
 export * from "./dispatch.js";
 export * from "./attendance.js";
+export * from "./gateway.js";
 

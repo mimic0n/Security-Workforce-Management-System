@@ -11,6 +11,7 @@ import { PoliciesModule } from "./modules/policies/policies.module.js";
 import { StaffingModule } from "./modules/staffing/staffing.module.js";
 import { DispatchModule } from "./modules/dispatch/dispatch.module.js";
 import { AttendanceModule } from "./modules/attendance/attendance.module.js";
+import { GatewayModule } from "./gateway/gateway.module.js";
 
 @Module({
   imports: [
@@ -25,7 +26,8 @@ import { AttendanceModule } from "./modules/attendance/attendance.module.js";
     PoliciesModule,
     StaffingModule,
     DispatchModule,
-    AttendanceModule
+    AttendanceModule,
+    GatewayModule
   ]
 })
 export class AppModule {}

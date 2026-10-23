@@ -346,6 +346,20 @@ export class DispatchService {
     // Enqueue Outbox message
     await this.outboxService.enqueue(tx, output.topic, output.payload);
 
+    // Enqueue break lock/unlock notifications to guard room (§11)
+    if (output.toStatus === "RELIEVED_FOR_MEAL" && currentPost.guard_id) {
+      await this.outboxService.enqueue(tx, "break.unlocked", {
+        guardId: Number(currentPost.guard_id),
+        postId: event.postId
+      });
+    } else if (output.toStatus === "HANDOVER_PENDING" && currentPost.guard_id) {
+      await this.outboxService.enqueue(tx, "break.locked", {
+        guardId: Number(currentPost.guard_id),
+        postId: event.postId,
+        reason: "Chờ tiếp viên cơ động bàn giao"
+      });
+    }
+
     return {
       success: true,
       siteId,
