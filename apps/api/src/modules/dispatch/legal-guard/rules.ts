@@ -38,11 +38,41 @@ export interface LegalValidationContext {
 }
 
 /**
- * Get ISO 8601 week string "YYYY-Www" for a Date
+ * Timezone offset in hours for AEON Mall Thanh Khê, Da Nang, Vietnam (UTC+7)
  */
-export function getIsoWeekKey(date: Date): string {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+export const DEFAULT_SITE_TZ_OFFSET_HOURS = 7;
+
+/**
+ * Extract the hour (0..23) of a Date in the site's local timezone (UTC+7)
+ */
+export function getSiteLocalHour(date: Date, offsetHours = DEFAULT_SITE_TZ_OFFSET_HOURS): number {
+  const localMs = date.getTime() + offsetHours * 3600 * 1000;
+  return new Date(localMs).getUTCHours();
+}
+
+/**
+ * Format a Date as "YYYY-MM-DD" in the site's local timezone (UTC+7)
+ */
+export function toSiteLocalDateString(
+  date: Date,
+  offsetHours = DEFAULT_SITE_TZ_OFFSET_HOURS
+): string {
+  const localMs = date.getTime() + offsetHours * 3600 * 1000;
+  const d = new Date(localMs);
+  const year = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Get ISO 8601 week string "YYYY-Www" for a Date in the site's local timezone (UTC+7)
+ */
+export function getIsoWeekKey(date: Date, offsetHours = DEFAULT_SITE_TZ_OFFSET_HOURS): string {
+  const localMs = date.getTime() + offsetHours * 3600 * 1000;
+  const d = new Date(localMs);
   const dayNum = d.getUTCDay() || 7;
+  // Shift to nearest Thursday (current date + 4 - current day number)
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   const weekNo = Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
@@ -84,17 +114,18 @@ export function checkMinRest(
 export function checkMaxWorkDays(
   candidateDate: Date,
   existingDates: string[],
-  maxDaysWeek = 6
+  maxDaysWeek = 6,
+  offsetHours = DEFAULT_SITE_TZ_OFFSET_HOURS
 ): { ok: boolean; violations: string[] } {
   const violations: string[] = [];
-  const candidateIsoWeek = getIsoWeekKey(candidateDate);
-  const candidateDateStr = candidateDate.toISOString().slice(0, 10);
+  const candidateIsoWeek = getIsoWeekKey(candidateDate, offsetHours);
+  const candidateDateStr = toSiteLocalDateString(candidateDate, offsetHours);
 
   // Filter existing dates to those in the same ISO week
   const sameWeekDates = new Set<string>();
   for (const dateStr of existingDates) {
-    const d = new Date(`${dateStr}T12:00:00Z`);
-    if (getIsoWeekKey(d) === candidateIsoWeek) {
+    const d = new Date(`${dateStr}T12:00:00+07:00`);
+    if (getIsoWeekKey(d, offsetHours) === candidateIsoWeek) {
       sameWeekDates.add(dateStr);
     }
   }
@@ -139,10 +170,11 @@ export function checkOtCaps(
  */
 export function checkCertificates(
   certifications: CertificationRecord[],
-  assignmentDate: Date
+  assignmentDate: Date,
+  offsetHours = DEFAULT_SITE_TZ_OFFSET_HOURS
 ): { ok: boolean; violations: string[] } {
   const violations: string[] = [];
-  const dateStr = assignmentDate.toISOString().slice(0, 10);
+  const dateStr = toSiteLocalDateString(assignmentDate, offsetHours);
 
   const hasValidCert = certifications.some((c) => {
     const expiresOn = c.expires_on.slice(0, 10);
@@ -181,6 +213,16 @@ export function checkDoubleBooking(
   return { ok: violations.length === 0, violations };
 }
 
+export interface CostMultiplierOptions {
+  regularDay?: number;
+  regularNight?: number;
+  otDay?: number;
+  otNight?: number;
+  nightStart?: string; // e.g. "22:00"
+  nightEnd?: string;   // e.g. "06:00"
+  offsetHours?: number;
+}
+
 /**
  * 6. Cost Estimation Helper (§9 rule 6: Night x1.3, Day OT x1.5, Night OT x2.0)
  */
@@ -189,19 +231,22 @@ export function estimateAssignmentCost(
   endTime: Date,
   isOvertime = false,
   baseHourlyRate = 100,
-  customMultipliers?: {
-    regularDay?: number;
-    regularNight?: number;
-    otDay?: number;
-    otNight?: number;
-  }
+  customOptions?: CostMultiplierOptions
 ): CostEstimateResult {
   const mult = {
-    regularDay: customMultipliers?.regularDay ?? 1.0,
-    regularNight: customMultipliers?.regularNight ?? 1.3,
-    otDay: customMultipliers?.otDay ?? 1.5,
-    otNight: customMultipliers?.otNight ?? 2.0
+    regularDay: customOptions?.regularDay ?? 1.0,
+    regularNight: customOptions?.regularNight ?? 1.3,
+    otDay: customOptions?.otDay ?? 1.5,
+    otNight: customOptions?.otNight ?? 2.0
   };
+
+  const offsetHours = customOptions?.offsetHours ?? DEFAULT_SITE_TZ_OFFSET_HOURS;
+  const nightStartHour = customOptions?.nightStart
+    ? parseInt(customOptions.nightStart.split(":")[0], 10)
+    : 22;
+  const nightEndHour = customOptions?.nightEnd
+    ? parseInt(customOptions.nightEnd.split(":")[0], 10)
+    : 6;
 
   let regularDayHours = 0;
   let regularNightHours = 0;
@@ -218,9 +263,9 @@ export function estimateAssignmentCost(
     const durationHours = (nextCursor - cursor) / stepMs;
     const midPoint = new Date(cursor + (nextCursor - cursor) / 2);
 
-    // Night hours: 22:00 to 06:00 local time
-    const hour = midPoint.getHours();
-    const isNight = hour >= 22 || hour < 6;
+    // Night hours in site local time (default: 22:00 to 06:00 UTC+7)
+    const localHour = getSiteLocalHour(midPoint, offsetHours);
+    const isNight = localHour >= nightStartHour || localHour < nightEndHour;
 
     if (isOvertime) {
       if (isNight) {

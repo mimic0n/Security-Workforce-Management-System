@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, BadRequestException, Optional } from "@nestjs/common";
+import { Injectable, Inject, NotFoundException, BadRequestException, Optional, forwardRef } from "@nestjs/common";
 import { PoolClient } from "pg";
 import {
   Clock,
@@ -6,7 +6,9 @@ import {
   SiteStateRecord,
   StateTransitionEvent,
   TransitionResult,
-  StateSnapshotResponse
+  StateSnapshotResponse,
+  DispatchOverrideDto,
+  DispatchOrder
 } from "@swms/contracts";
 import { CLOCK_TOKEN } from "../../core/clock/clock.interface.js";
 import { DatabaseService } from "../../core/database/database.service.js";
@@ -16,6 +18,8 @@ import { StateMachineService } from "./state-machine/state-machine.service.js";
 import { OptimisticLockError } from "./state-machine/optimistic-lock.error.js";
 import { InvalidTransitionError } from "./state-machine/invalid-transition.error.js";
 import { PostContext } from "./state-machine/transitions.js";
+import { DispatchQueueService } from "./engine/queue.service.js";
+import { LegalGuardService } from "./legal-guard/legal-guard.service.js";
 
 @Injectable()
 export class DispatchService {
@@ -24,7 +28,9 @@ export class DispatchService {
     @Inject(StateMachineService) private readonly stateMachineService: StateMachineService,
     @Inject(OutboxService) private readonly outboxService: OutboxService,
     @Inject(CLOCK_TOKEN) private readonly clock: Clock,
-    @Optional() @Inject(ConfigService) private readonly configService?: ConfigService
+    @Optional() @Inject(ConfigService) private readonly configService?: ConfigService,
+    @Optional() @Inject(forwardRef(() => DispatchQueueService)) private readonly queueService?: DispatchQueueService,
+    @Optional() @Inject(LegalGuardService) private readonly legalGuardService?: LegalGuardService
   ) {}
 
   /**
@@ -462,4 +468,482 @@ export class DispatchService {
       lastSeq
     };
   }
+
+  /**
+   * Enqueue a dispatch task
+   */
+  async enqueueTask(task: {
+    siteId?: string;
+    shiftKey: string;
+    kind: string;
+    payload?: Record<string, any>;
+    priority?: number;
+    idemKey?: string | null;
+  }) {
+    if (!this.queueService) {
+      throw new Error("DispatchQueueService is not configured");
+    }
+    return this.queueService.enqueue(task);
+  }
+
+  /**
+   * Query dispatch orders
+   */
+  async getOrders(filter?: {
+    shiftKey?: string;
+    status?: string;
+    guardId?: number;
+    kind?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<DispatchOrder[]> {
+    let query = `
+      SELECT id, shift_key, kind, to_guard_id, from_post, to_post, status, explain, sent_at, ack_at, idem_key
+      FROM dispatch_orders
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+    let pIdx = 1;
+
+    if (filter?.shiftKey) {
+      query += ` AND shift_key = $${pIdx++}`;
+      params.push(filter.shiftKey);
+    }
+    if (filter?.status) {
+      query += ` AND status = $${pIdx++}`;
+      params.push(filter.status);
+    }
+    if (filter?.guardId) {
+      query += ` AND to_guard_id = $${pIdx++}`;
+      params.push(filter.guardId);
+    }
+    if (filter?.kind) {
+      query += ` AND kind = $${pIdx++}`;
+      params.push(filter.kind);
+    }
+
+    query += ` ORDER BY id DESC`;
+
+    if (filter?.limit) {
+      query += ` LIMIT $${pIdx++}`;
+      params.push(filter.limit);
+    }
+    if (filter?.offset) {
+      query += ` OFFSET $${pIdx++}`;
+      params.push(filter.offset);
+    }
+
+    const res = await this.db.query(query, params);
+    return res.rows.map((r: any) => ({
+      id: Number(r.id),
+      shiftKey: r.shift_key,
+      kind: r.kind,
+      toGuardId: r.to_guard_id ? Number(r.to_guard_id) : null,
+      fromPost: r.from_post,
+      toPost: r.to_post,
+      status: r.status,
+      explain: typeof r.explain === "string" ? JSON.parse(r.explain) : r.explain,
+      sentAt: r.sent_at ? new Date(r.sent_at).toISOString() : null,
+      ackAt: r.ack_at ? new Date(r.ack_at).toISOString() : null,
+      idemKey: r.idem_key
+    }));
+  }
+
+  /**
+   * Get single dispatch order by ID
+   */
+  async getOrderById(id: number): Promise<DispatchOrder> {
+    const res = await this.db.query(
+      `SELECT id, shift_key, kind, to_guard_id, from_post, to_post, status, explain, sent_at, ack_at, idem_key
+       FROM dispatch_orders
+       WHERE id = $1;`,
+      [id]
+    );
+
+    if (res.rows.length === 0) {
+      throw new NotFoundException(`Dispatch order #${id} not found`);
+    }
+
+    const r = res.rows[0];
+    return {
+      id: Number(r.id),
+      shiftKey: r.shift_key,
+      kind: r.kind,
+      toGuardId: r.to_guard_id ? Number(r.to_guard_id) : null,
+      fromPost: r.from_post,
+      toPost: r.to_post,
+      status: r.status,
+      explain: typeof r.explain === "string" ? JSON.parse(r.explain) : r.explain,
+      sentAt: r.sent_at ? new Date(r.sent_at).toISOString() : null,
+      ackAt: r.ack_at ? new Date(r.ack_at).toISOString() : null,
+      idemKey: r.idem_key
+    };
+  }
+
+  /**
+   * Acknowledge a dispatch order (§11, §12)
+   */
+  async ackOrder(orderId: number, guardId?: number): Promise<DispatchOrder> {
+    const now = this.clock.now();
+
+    return await this.db.transaction(async (tx) => {
+      const orderRes = await tx.query(
+        `SELECT id, shift_key, kind, to_guard_id, from_post, to_post, status, explain, sent_at, ack_at, idem_key
+         FROM dispatch_orders
+         WHERE id = $1
+         FOR UPDATE;`,
+        [orderId]
+      );
+
+      if (orderRes.rows.length === 0) {
+        throw new NotFoundException(`Dispatch order #${orderId} not found`);
+      }
+
+      const order = orderRes.rows[0];
+      const effectiveGuardId = order.to_guard_id ? Number(order.to_guard_id) : guardId;
+
+      if (guardId && order.to_guard_id && Number(order.to_guard_id) !== Number(guardId)) {
+        throw new BadRequestException(`Order #${orderId} is assigned to guard ${order.to_guard_id}, not ${guardId}`);
+      }
+
+      if (order.status === "ACKED") {
+        return this.getOrderById(orderId);
+      }
+
+      if (order.status === "DECLINED" || order.status === "EXPIRED" || order.status === "CANCELLED") {
+        throw new BadRequestException(`Cannot acknowledge order in '${order.status}' status`);
+      }
+
+      // Update order status to ACKED
+      await tx.query(
+        `UPDATE dispatch_orders 
+         SET status = 'ACKED', ack_at = $1 
+         WHERE id = $2;`,
+        [now, orderId]
+      );
+
+      // If order targets a post, update post state and assignment
+      if (order.to_post && effectiveGuardId) {
+        // Transition post to OCCUPIED
+        await tx.query(
+          `UPDATE post_state 
+           SET status = 'OCCUPIED', guard_id = $1, since = $2, deadline_at = NULL, version = version + 1 
+           WHERE post_id = $3;`,
+          [effectiveGuardId, now, order.to_post]
+        );
+
+        // Record state event
+        const siteId = await this.getPrimarySiteId(tx);
+        await tx.query(
+          `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
+           VALUES ($1, $2, 'VACANT_ALERT', 'OCCUPIED', 'DISPATCH_ACKED', $3, $4, $5, clock_timestamp());`,
+          [siteId, order.to_post, effectiveGuardId, JSON.stringify({ orderId, kind: order.kind }), now]
+        );
+
+        // Update or insert assignment
+        const shiftParts = order.shift_key.split(":");
+        const shiftCode = shiftParts[1] || "MORNING";
+        const existingAssign = await tx.query(
+          `SELECT id FROM assignments 
+           WHERE guard_id = $1 AND shift = $2 AND status = 'ACTIVE' AND period @> $3::timestamptz;`,
+          [effectiveGuardId, shiftCode, now]
+        );
+
+        if (existingAssign.rows.length > 0) {
+          await tx.query(
+            `UPDATE assignments SET post_id = $1, source = 'DISPATCH' WHERE id = $2;`,
+            [order.to_post, existingAssign.rows[0].id]
+          );
+        } else {
+          await tx.query(
+            `INSERT INTO assignments (guard_id, post_id, role, shift, period, source, status)
+             VALUES ($1, $2, 'FIXED', $3, tstzrange($4, ($4::timestamptz + interval '8 hours'), '[)'), 'DISPATCH', 'ACTIVE');`,
+            [effectiveGuardId, order.to_post, shiftCode, now]
+          );
+        }
+      }
+
+      // Enqueue outbox notification
+      await this.outboxService.enqueue(tx, "dispatch.acked", {
+        orderId,
+        guardId: effectiveGuardId,
+        postId: order.to_post,
+        shiftKey: order.shift_key
+      });
+
+      return {
+        id: Number(order.id),
+        shiftKey: order.shift_key,
+        kind: order.kind,
+        toGuardId: effectiveGuardId,
+        fromPost: order.from_post,
+        toPost: order.to_post,
+        status: "ACKED",
+        explain: typeof order.explain === "string" ? JSON.parse(order.explain) : order.explain,
+        sentAt: order.sent_at ? new Date(order.sent_at).toISOString() : null,
+        ackAt: now.toISOString(),
+        idemKey: order.idem_key
+      };
+    });
+  }
+
+  /**
+   * Decline a dispatch order (§11, §12)
+   * Triggers cascade to proceed to next candidate
+   */
+  async declineOrder(orderId: number, reason?: string): Promise<DispatchOrder> {
+    const now = this.clock.now();
+
+    const order = await this.db.transaction(async (tx) => {
+      const orderRes = await tx.query(
+        `SELECT id, shift_key, kind, to_guard_id, from_post, to_post, status, explain, sent_at, ack_at, idem_key
+         FROM dispatch_orders
+         WHERE id = $1
+         FOR UPDATE;`,
+        [orderId]
+      );
+
+      if (orderRes.rows.length === 0) {
+        throw new NotFoundException(`Dispatch order #${orderId} not found`);
+      }
+
+      const o = orderRes.rows[0];
+      if (o.status !== "SENT" && o.status !== "PROPOSED") {
+        throw new BadRequestException(`Cannot decline order in '${o.status}' status`);
+      }
+
+      const explain = typeof o.explain === "string" ? JSON.parse(o.explain) : o.explain;
+      explain.declinedReason = reason || "Declined by guard";
+
+      await tx.query(
+        `UPDATE dispatch_orders 
+         SET status = 'DECLINED', explain = $1 
+         WHERE id = $2;`,
+        [JSON.stringify(explain), orderId]
+      );
+
+      await this.outboxService.enqueue(tx, "dispatch.declined", {
+        orderId,
+        guardId: o.to_guard_id ? Number(o.to_guard_id) : null,
+        postId: o.to_post,
+        shiftKey: o.shift_key,
+        reason
+      });
+
+      return o;
+    });
+
+    // If order had a target post, trigger queue to fill vacancy with next candidate!
+    if (order.to_post && this.queueService) {
+      await this.queueService.enqueue({
+        shiftKey: order.shift_key,
+        kind: "FILL_VACANCY",
+        payload: { postId: order.to_post }
+      });
+    }
+
+    return this.getOrderById(orderId);
+  }
+
+  /**
+   * Expire an unacknowledged order past timeout (§11, §12)
+   */
+  async expireOrder(orderId: number): Promise<DispatchOrder> {
+    const order = await this.db.transaction(async (tx) => {
+      const orderRes = await tx.query(
+        `SELECT id, shift_key, kind, to_guard_id, from_post, to_post, status, explain, sent_at, ack_at, idem_key
+         FROM dispatch_orders
+         WHERE id = $1
+         FOR UPDATE;`,
+        [orderId]
+      );
+
+      if (orderRes.rows.length === 0) {
+        throw new NotFoundException(`Dispatch order #${orderId} not found`);
+      }
+
+      const o = orderRes.rows[0];
+      if (o.status !== "SENT" && o.status !== "PROPOSED") {
+        return o;
+      }
+
+      await tx.query(`UPDATE dispatch_orders SET status = 'EXPIRED' WHERE id = $1;`, [orderId]);
+
+      await this.outboxService.enqueue(tx, "dispatch.expired", {
+        orderId,
+        guardId: o.to_guard_id ? Number(o.to_guard_id) : null,
+        postId: o.to_post,
+        shiftKey: o.shift_key
+      });
+
+      return o;
+    });
+
+    // Trigger next candidate cascade
+    if (order.to_post && this.queueService) {
+      await this.queueService.enqueue({
+        shiftKey: order.shift_key,
+        kind: "FILL_VACANCY",
+        payload: { postId: order.to_post }
+      });
+    }
+
+    return this.getOrderById(orderId);
+  }
+
+  /**
+   * Check and expire orders that exceeded ack timeout
+   */
+  async checkExpiredOrders(shiftKey?: string): Promise<number> {
+    let timeoutSec = 60;
+    if (this.configService) {
+      try {
+        const val = await this.configService.get<number>("dispatch.ack_timeout_sec");
+        if (typeof val === "number") timeoutSec = val;
+      } catch {}
+    }
+
+    const now = this.clock.now();
+    const cutoff = new Date(now.getTime() - timeoutSec * 1000);
+
+    let query = `
+      SELECT id FROM dispatch_orders 
+      WHERE status IN ('SENT', 'PROPOSED') AND sent_at IS NOT NULL AND sent_at <= $1
+    `;
+    const params: any[] = [cutoff];
+
+    if (shiftKey) {
+      query += ` AND shift_key = $2`;
+      params.push(shiftKey);
+    }
+
+    const res = await this.db.query(query, params);
+    for (const row of res.rows) {
+      await this.expireOrder(Number(row.id));
+    }
+
+    return res.rows.length;
+  }
+
+  /**
+   * Dispatcher manual override (§12: POST /dispatch/override)
+   */
+  async overrideDispatch(dto: DispatchOverrideDto, dispatcherId?: number): Promise<DispatchOrder> {
+    const now = this.clock.now();
+
+    // Check LegalGuard (warning only, override proceeds)
+    let legalWarning: string | null = null;
+    if (this.legalGuardService) {
+      const shiftParts = dto.shiftKey.split(":");
+      const shift = (shiftParts[1] || "MORNING") as any;
+      const proposedStart = now;
+      const proposedEnd = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+
+      const check = await this.legalGuardService.validate({
+        guardId: dto.guardId,
+        startTime: proposedStart,
+        endTime: proposedEnd,
+        isOvertime: true
+      });
+
+      if (!check.ok) {
+        legalWarning = `LegalGuard warnings: ${check.violations.join("; ")}`;
+      }
+    }
+
+    return await this.db.transaction(async (tx) => {
+      const siteId = await this.getPrimarySiteId(tx);
+
+      // Update post state to OCCUPIED
+      await tx.query(
+        `UPDATE post_state 
+         SET status = 'OCCUPIED', guard_id = $1, since = $2, deadline_at = NULL, version = version + 1 
+         WHERE post_id = $3;`,
+        [dto.guardId, now, dto.postId]
+      );
+
+      // Append state event
+      await tx.query(
+        `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
+         VALUES ($1, $2, 'VACANT_ALERT', 'OCCUPIED', 'REPLACEMENT_ASSIGNED', $3, $4, $5, clock_timestamp());`,
+        [
+          siteId,
+          dto.postId,
+          dispatcherId || null,
+          JSON.stringify({ override: true, reason: dto.reason, legalWarning }),
+          now
+        ]
+      );
+
+      // Update or insert assignment
+      const shiftParts = dto.shiftKey.split(":");
+      const shiftCode = shiftParts[1] || "MORNING";
+
+      const existingAssign = await tx.query(
+        `SELECT id FROM assignments 
+         WHERE guard_id = $1 AND shift = $2 AND status = 'ACTIVE' AND period @> $3::timestamptz;`,
+        [dto.guardId, shiftCode, now]
+      );
+
+      if (existingAssign.rows.length > 0) {
+        await tx.query(
+          `UPDATE assignments SET post_id = $1, source = 'MANUAL' WHERE id = $2;`,
+          [dto.postId, existingAssign.rows[0].id]
+        );
+      } else {
+        await tx.query(
+          `INSERT INTO assignments (guard_id, post_id, role, shift, period, source, status)
+           VALUES ($1, $2, 'FIXED', $3, tstzrange($4, ($4::timestamptz + interval '8 hours'), '[)'), 'MANUAL', 'ACTIVE');`,
+          [dto.guardId, dto.postId, shiftCode, now]
+        );
+      }
+
+      // Insert dispatch_orders kind 'OVERRIDE'
+      const orderRes = await tx.query(
+        `INSERT INTO dispatch_orders (shift_key, kind, to_guard_id, to_post, status, explain, sent_at, ack_at)
+         VALUES ($1, 'OVERRIDE', $2, $3, 'ACKED', $4, $5, $5)
+         RETURNING id;`,
+        [
+          dto.shiftKey,
+          dto.guardId,
+          dto.postId,
+          JSON.stringify({
+            override: true,
+            reason: dto.reason,
+            dispatcherId,
+            legalWarning,
+            actions: [{ action: "MANUAL_OVERRIDE", guardId: dto.guardId, toPost: dto.postId, reason: dto.reason }]
+          }),
+          now
+        ]
+      );
+
+      await this.outboxService.enqueue(tx, "dispatch.override", {
+        orderId: Number(orderRes.rows[0].id),
+        guardId: dto.guardId,
+        postId: dto.postId,
+        shiftKey: dto.shiftKey,
+        reason: dto.reason
+      });
+
+      return {
+        id: Number(orderRes.rows[0].id),
+        shiftKey: dto.shiftKey,
+        kind: "OVERRIDE",
+        toGuardId: dto.guardId,
+        fromPost: null,
+        toPost: dto.postId,
+        status: "ACKED",
+        explain: {
+          winner: { guardId: dto.guardId, reason: dto.reason },
+          rejected: [],
+          actions: [{ action: "MANUAL_OVERRIDE", guardId: dto.guardId, toPost: dto.postId, reason: dto.reason }]
+        },
+        sentAt: now.toISOString(),
+        ackAt: now.toISOString(),
+        idemKey: null
+      };
+    });
+  }
 }
+

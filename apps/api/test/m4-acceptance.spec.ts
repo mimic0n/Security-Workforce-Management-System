@@ -375,13 +375,13 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
 
     it("allows MERGE_WITH_PAIR on Tier 2 post (P2) when pair post (P3) is OCCUPIED", async () => {
       await db.query(`UPDATE post_state SET status = 'VACANT_ALERT', version = 1 WHERE post_id = 'P2';`);
-      await db.query(`UPDATE post_state SET status = 'OCCUPIED', version = 1 WHERE post_id = 'P3';`);
+      await db.query(`UPDATE post_state SET status = 'OCCUPIED', version = 1, guard_id = $1 WHERE post_id = 'P3';`, [guardId]);
 
       const res = await dispatchService.applyWithRetry({
         siteId: "AEON_THANH_KHE_F1",
         postId: "P2",
         kind: "MERGE_WITH_PAIR",
-        payload: { pairGuardId: 10 }
+        payload: { pairGuardId: guardId }
       });
 
       expect(res.toStatus).toBe("COVERED_BY_PAIR");
@@ -581,43 +581,45 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
   describe("8. Policy Dynamism & No Hardcoded Business Constants (Rule #2)", () => {
     it("dynamically reads updated meal.handover_buffer_min policy from ConfigService without restarting", async () => {
       // Reset G1 to OCCUPIED
-      await db.query(`UPDATE post_state SET status = 'OCCUPIED', guard_id = 1, version = 1 WHERE post_id = 'G1';`);
+      await db.query(`UPDATE post_state SET status = 'OCCUPIED', guard_id = $1, version = 1 WHERE post_id = 'G1';`, [guardId]);
 
       // 1. First trigger with default policy (5 min)
       const res1 = await dispatchService.applyWithRetry({
         siteId: "AEON_THANH_KHE_F1",
         postId: "G1",
         kind: "MEAL_WINDOW_OPEN",
-        payload: { breakPlanId: 101, floatId: 2 }
+        payload: { breakPlanId: 101, floatId: guardId }
       });
       const deadline1 = new Date(res1.deadlineAt!).getTime();
       expect(deadline1 - clock.now().getTime()).toBe(5 * 60 * 1000);
 
-      // 2. Update policy to 15 min via PUT /policies/meal.handover_buffer_min
-      const putRes = await request(app.getHttpServer())
-        .put("/policies/meal.handover_buffer_min")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ value: 15 });
-      expect(putRes.status).toBe(200);
+      try {
+        // 2. Update policy to 15 min via PUT /policies/meal.handover_buffer_min
+        const putRes = await request(app.getHttpServer())
+          .put("/policies/meal.handover_buffer_min")
+          .set("Authorization", `Bearer ${adminToken}`)
+          .send({ value: 15 });
+        expect(putRes.status).toBe(200);
 
-      // Reset G1 to OCCUPIED
-      await db.query(`UPDATE post_state SET status = 'OCCUPIED', guard_id = 1, version = 2 WHERE post_id = 'G1';`);
+        // Reset G1 to OCCUPIED
+        await db.query(`UPDATE post_state SET status = 'OCCUPIED', guard_id = $1, version = 2 WHERE post_id = 'G1';`, [guardId]);
 
-      // 3. Second trigger - must now dynamically compute 15 min without restarting!
-      const res2 = await dispatchService.applyWithRetry({
-        siteId: "AEON_THANH_KHE_F1",
-        postId: "G1",
-        kind: "MEAL_WINDOW_OPEN",
-        payload: { breakPlanId: 102, floatId: 2 }
-      });
-      const deadline2 = new Date(res2.deadlineAt!).getTime();
-      expect(deadline2 - clock.now().getTime()).toBe(15 * 60 * 1000);
-
-      // Restore policy back to 5 min
-      await request(app.getHttpServer())
-        .put("/policies/meal.handover_buffer_min")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ value: 5 });
+        // 3. Second trigger - must now dynamically compute 15 min without restarting!
+        const res2 = await dispatchService.applyWithRetry({
+          siteId: "AEON_THANH_KHE_F1",
+          postId: "G1",
+          kind: "MEAL_WINDOW_OPEN",
+          payload: { breakPlanId: 102, floatId: guardId }
+        });
+        const deadline2 = new Date(res2.deadlineAt!).getTime();
+        expect(deadline2 - clock.now().getTime()).toBe(15 * 60 * 1000);
+      } finally {
+        // Restore policy back to 5 min
+        await request(app.getHttpServer())
+          .put("/policies/meal.handover_buffer_min")
+          .set("Authorization", `Bearer ${adminToken}`)
+          .send({ value: 5 });
+      }
     });
   });
 });

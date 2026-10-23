@@ -8,6 +8,12 @@ export default defineConfig({
     setupFiles: ["./vitest.setup.ts"],
     include: ["**/*.spec.ts"],
     fileParallelism: false,
+    pool: "forks",
+    poolOptions: {
+      forks: {
+        singleFork: true
+      }
+    },
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"]

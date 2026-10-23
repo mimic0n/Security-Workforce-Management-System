@@ -11,7 +11,7 @@
     "typecheck": "npm run --workspaces --if-present typecheck",
     "lint": "eslint . --ext .ts",
     "test": "vitest run",
-    "test:race": "vitest run --testPathPattern=race",
+    "test:race": "vitest run race",
     "db:migrate": "tsx db/migrate.ts up",
     "db:migrate:down": "tsx db/migrate.ts down",
     "db:seed": "tsx db/seed/seed.ts",

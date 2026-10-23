@@ -5,6 +5,12 @@ import pg, { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private pool!: Pool;
 
+  constructor(pool?: Pool) {
+    if (pool) {
+      this.pool = pool;
+    }
+  }
+
   private ensurePool(): Pool {
     if (!this.pool) {
       const dbUrl = process.env.DATABASE_URL || "postgres://grey@localhost:5432/swms";

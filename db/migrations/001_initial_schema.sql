@@ -292,3 +292,21 @@ CREATE TABLE IF NOT EXISTS users (
   guard_id bigint REFERENCES guards(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- 24. Dispatch Tasks (for serial queue per site:shiftKey)
+CREATE TABLE IF NOT EXISTS dispatch_tasks (
+  id bigserial PRIMARY KEY,
+  site_id text NOT NULL,
+  shift_key text NOT NULL,
+  priority int NOT NULL DEFAULT 4,
+  kind text NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}',
+  status text NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
+  created_at timestamptz NOT NULL,
+  processed_at timestamptz,
+  error text,
+  idem_key text UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_pending ON dispatch_tasks (site_id, shift_key, status, priority ASC, id ASC);
+

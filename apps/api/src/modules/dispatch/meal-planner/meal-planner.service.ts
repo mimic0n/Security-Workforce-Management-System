@@ -1,4 +1,4 @@
-import { Injectable, Inject, Optional, OnModuleInit } from "@nestjs/common";
+import { Injectable, Inject, Optional, OnModuleInit, forwardRef } from "@nestjs/common";
 import {
   Clock,
   MealPlannerPost,
@@ -22,7 +22,7 @@ export class MealPlannerService implements OnModuleInit {
     @Inject(CLOCK_TOKEN) private readonly clock: Clock,
     @Inject(ScheduledJobsService) private readonly scheduledJobs: ScheduledJobsService,
     @Optional() @Inject(ConfigService) private readonly configService?: ConfigService,
-    @Optional() @Inject(DispatchService) private readonly dispatchService?: DispatchService
+    @Optional() @Inject(forwardRef(() => DispatchService)) private readonly dispatchService?: DispatchService
   ) {}
 
   onModuleInit(): void {
@@ -123,10 +123,15 @@ export class MealPlannerService implements OnModuleInit {
     let handoverBufferMin = 5;
 
     if (this.configService) {
-      const windowPolicy = await this.configService.get<any>("meal.window");
-      if (windowPolicy) windowConfig = windowPolicy;
-      const bufferPolicy = await this.configService.get<number>("meal.handover_buffer_min");
-      if (typeof bufferPolicy === "number") handoverBufferMin = bufferPolicy;
+      try {
+        const windowPolicy = await this.configService.get<any>("meal.window");
+        if (windowPolicy) windowConfig = windowPolicy;
+      } catch {}
+
+      try {
+        const bufferPolicy = await this.configService.get<number>("meal.handover_buffer_min");
+        if (typeof bufferPolicy === "number") handoverBufferMin = bufferPolicy;
+      } catch {}
     }
 
     const shiftTimes = (windowConfig as any)[shiftCode] || ["10:00", "12:45"];
@@ -161,10 +166,12 @@ export class MealPlannerService implements OnModuleInit {
     } else {
       let floatCount = 2;
       if (this.configService) {
-        const hcPolicy = await this.configService.get<any>("headcount.float_t1");
-        if (hcPolicy && typeof hcPolicy[shiftCode] === "number") {
-          floatCount = hcPolicy[shiftCode];
-        }
+        try {
+          const hcPolicy = await this.configService.get<any>("headcount.float_t1");
+          if (hcPolicy && typeof hcPolicy[shiftCode] === "number") {
+            floatCount = hcPolicy[shiftCode];
+          }
+        } catch {}
       }
       floatsQuery += ` ORDER BY id ASC LIMIT $1;`;
       queryParams.push(floatCount);
@@ -172,8 +179,22 @@ export class MealPlannerService implements OnModuleInit {
 
     const floatsRes = await this.db.query(floatsQuery, queryParams);
 
-    const shiftDayStart = new Date(`${dateStr}T06:00:00+07:00`);
-    const shiftDayEnd = new Date(`${dateStr}T14:00:00+07:00`);
+    // Read shift start, end, and break minutes from shift_templates
+    const shiftRes = await this.db.query(
+      `SELECT start_time, end_time, break_minutes FROM shift_templates WHERE code = $1;`,
+      [shiftCode]
+    );
+    let shiftStartStr = "06:00:00";
+    let shiftEndStr = "14:00:00";
+    let breakMinutes = 30;
+    if (shiftRes.rows.length > 0) {
+      shiftStartStr = shiftRes.rows[0].start_time;
+      shiftEndStr = shiftRes.rows[0].end_time;
+      breakMinutes = Number(shiftRes.rows[0].break_minutes) || 30;
+    }
+
+    const shiftDayStart = new Date(`${dateStr}T${shiftStartStr}+07:00`);
+    const shiftDayEnd = new Date(`${dateStr}T${shiftEndStr}+07:00`);
 
     const floats: MealPlannerFloat[] = floatsRes.rows.map((r: any) => ({
       id: String(r.id),
@@ -190,7 +211,7 @@ export class MealPlannerService implements OnModuleInit {
       posts,
       floats,
       window: { start: windowStart, end: windowEnd },
-      breakMinutes: 30,
+      breakMinutes,
       handoverBufferMin,
       travel,
       baseLocation: "BASE",
@@ -199,7 +220,7 @@ export class MealPlannerService implements OnModuleInit {
 
     if (result.feasible) {
       // Persist in break_plans table
-      const client = await (this.db as any).pool.connect();
+      const client = await this.db.getClient();
       try {
         await client.query("BEGIN;");
         // Clear previous planned slots for this shiftKey
@@ -249,8 +270,10 @@ export class MealPlannerService implements OnModuleInit {
     const plans = await this.getBreakPlans(shiftKey);
     let handoverBufferMin = 5;
     if (this.configService) {
-      const buffer = await this.configService.get<number>("meal.handover_buffer_min");
-      if (typeof buffer === "number") handoverBufferMin = buffer;
+      try {
+        const buffer = await this.configService.get<number>("meal.handover_buffer_min");
+        if (typeof buffer === "number") handoverBufferMin = buffer;
+      } catch {}
     }
 
     for (const plan of plans) {
@@ -285,21 +308,17 @@ export class MealPlannerService implements OnModuleInit {
   }): Promise<MealReliefPlanResult> {
     const result = await this.generateAndPersistPlan(params);
     if (!result.feasible) {
-      // If infeasible, record staffing request or proposal if structural
-      try {
-        await this.db.query(
-          `INSERT INTO staffing_requests (created_at, shift, qty, reason, status)
-           VALUES ($1, $2, $3, $4, 'OPEN');`,
-          [
-            this.clock.now(),
-            params.shiftCode || "MORNING",
-            1,
-            `Infeasible meal relief plan: ${result.violations.map((v) => `${v.postId}:${v.reason}`).join(", ")}`
-          ]
-        );
-      } catch {
-        // Table might be absent or other non-fatal logging
-      }
+      // If infeasible, record staffing request
+      await this.db.query(
+        `INSERT INTO staffing_requests (created_at, shift, qty, reason, status)
+         VALUES ($1, $2, $3, $4, 'OPEN');`,
+        [
+          this.clock.now(),
+          params.shiftCode || "MORNING",
+          1,
+          `Infeasible meal relief plan: ${result.violations.map((v) => `${v.postId}:${v.reason}`).join(", ")}`
+        ]
+      );
     }
     return result;
   }

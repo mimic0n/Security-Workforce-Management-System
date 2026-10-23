@@ -90,9 +90,12 @@ describe("Milestone M5 Acceptance Criteria — LegalGuard & Meal Planner Persist
     );
 
     expect(rows.rows).toHaveLength(7);
-    expect(rows.rows[0].post_id).toBe("G1");
-    expect(rows.rows[0].status).toBe("PLANNED");
-    expect(rows.rows[0].slot).toBeDefined();
+    const postIds = rows.rows.map((r) => r.post_id);
+    expect(postIds).toEqual(["G1", "P1", "G4", "P6", "G5", "P7", "P8"]);
+    for (const r of rows.rows) {
+      expect(r.status).toBe("PLANNED");
+      expect(r.slot).toBeDefined();
+    }
 
     // REST API query GET /break-plans?shift=...
     const apiRes = await request(app.getHttpServer())
@@ -146,6 +149,13 @@ describe("Milestone M5 Acceptance Criteria — LegalGuard & Meal Planner Persist
     expect(postState.rows[0].status).toBe("HANDOVER_PENDING");
     expect(postState.rows[0].deadline_at).toBeDefined();
 
+    // Verify state_events record exists in same transaction
+    const stateEventRes = await pool.query(
+      `SELECT cause, post_id, to_status FROM state_events WHERE post_id = 'G1' AND cause = 'MEAL_WINDOW_OPEN' ORDER BY id DESC LIMIT 1;`
+    );
+    expect(stateEventRes.rows.length).toBe(1);
+    expect(stateEventRes.rows[0].to_status).toBe("HANDOVER_PENDING");
+
     // Verify outbox event emitted
     const outboxRes = await pool.query(
       `SELECT payload FROM outbox WHERE topic = 'post.state_changed' AND (payload->'payload'->>'postId' = 'G1' OR payload->>'postId' = 'G1') ORDER BY id DESC LIMIT 1;`
@@ -188,6 +198,15 @@ describe("Milestone M5 Acceptance Criteria — LegalGuard & Meal Planner Persist
     expect(replanRes.body.suggestions).toContain("EXTEND_WINDOW");
     expect(replanRes.body.suggestions).toContain("USE_TIER2_RELIEF");
     expect(replanRes.body.suggestions).toContain("CALL_IN_EXTRA_GUARD");
+
+    // Verify staffing_requests persistence
+    const staffReqRes = await pool.query(
+      `SELECT shift, qty, status, reason FROM staffing_requests WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1;`
+    );
+    expect(staffReqRes.rows.length).toBeGreaterThan(0);
+    expect(staffReqRes.rows[0].qty).toBe(1);
+    expect(staffReqRes.rows[0].status).toBe("OPEN");
+    expect(staffReqRes.rows[0].reason).toContain("Infeasible meal relief plan");
   });
 
   describe("4. DB-backed LegalGuard validation against seeded database", () => {

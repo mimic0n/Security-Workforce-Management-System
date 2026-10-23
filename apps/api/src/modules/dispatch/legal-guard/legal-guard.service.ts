@@ -11,6 +11,7 @@ import { ConfigService } from "../../policies/config.service.js";
 import {
   validateLegalAssignment,
   estimateAssignmentCost,
+  toSiteLocalDateString,
   AssignmentInterval,
   CertificationRecord,
   LegalGuardPolicies
@@ -100,9 +101,9 @@ export class LegalGuardService {
       }
     }
 
-    // Extract all distinct working dates from existing assignments
+    // Extract all distinct working dates from existing assignments in site local time (UTC+7)
     const existingDatesInWeek = existingAssignments.map((a) =>
-      a.startTime.toISOString().slice(0, 10)
+      toSiteLocalDateString(a.startTime)
     );
 
     // 3. Resolve active policies from ConfigService
@@ -114,17 +115,25 @@ export class LegalGuardService {
     };
 
     if (this.configService) {
-      const rest = await this.configService.get<number>("legal.min_rest_hours");
-      if (typeof rest === "number") policies.minRestHours = rest;
+      try {
+        const rest = await this.configService.get<number>("legal.min_rest_hours");
+        if (typeof rest === "number") policies.minRestHours = rest;
+      } catch {}
 
-      const days = await this.configService.get<number>("legal.max_work_days_week");
-      if (typeof days === "number") policies.maxWorkDaysWeek = days;
+      try {
+        const days = await this.configService.get<number>("legal.max_work_days_week");
+        if (typeof days === "number") policies.maxWorkDaysWeek = days;
+      } catch {}
 
-      const otMonth = await this.configService.get<number>("legal.ot_cap_month_min");
-      if (typeof otMonth === "number") policies.otCapMonthMin = otMonth;
+      try {
+        const otMonth = await this.configService.get<number>("legal.ot_cap_month_min");
+        if (typeof otMonth === "number") policies.otCapMonthMin = otMonth;
+      } catch {}
 
-      const otYear = await this.configService.get<number>("legal.ot_cap_year_min");
-      if (typeof otYear === "number") policies.otCapYearMin = otYear;
+      try {
+        const otYear = await this.configService.get<number>("legal.ot_cap_year_min");
+        if (typeof otYear === "number") policies.otCapYearMin = otYear;
+      } catch {}
     }
 
     // 4. Validate through pure rules engine
@@ -152,7 +161,7 @@ export class LegalGuardService {
   }
 
   /**
-   * Cost estimation helper
+   * Cost estimation helper reading night hours & multipliers from ConfigService
    */
   async estimateCost(params: {
     startTime: Date;
@@ -160,11 +169,45 @@ export class LegalGuardService {
     isOvertime?: boolean;
     baseHourlyRate?: number;
   }): Promise<CostEstimateResult> {
+    let nightStart = "22:00";
+    let nightEnd = "06:00";
+    let regularNight = 1.3;
+    let otDay = 1.5;
+    let otNight = 2.0;
+
+    if (this.configService) {
+      try {
+        const ns = await this.configService.get<string>("legal.night_start");
+        if (ns) nightStart = ns;
+      } catch {}
+
+      try {
+        const ne = await this.configService.get<string>("legal.night_end");
+        if (ne) nightEnd = ne;
+      } catch {}
+
+      try {
+        const mults = await this.configService.get<any>("legal.cost_multipliers");
+        if (mults) {
+          if (typeof mults.regularNight === "number") regularNight = mults.regularNight;
+          if (typeof mults.otDay === "number") otDay = mults.otDay;
+          if (typeof mults.otNight === "number") otNight = mults.otNight;
+        }
+      } catch {}
+    }
+
     return estimateAssignmentCost(
       params.startTime,
       params.endTime,
       params.isOvertime ?? false,
-      params.baseHourlyRate ?? 100
+      params.baseHourlyRate ?? 100,
+      {
+        nightStart,
+        nightEnd,
+        regularNight,
+        otDay,
+        otNight
+      }
     );
   }
 }

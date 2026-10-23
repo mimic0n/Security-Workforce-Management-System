@@ -17,10 +17,10 @@ export async function runSeed(connectionString?: string) {
     await client.query(`
       TRUNCATE TABLE 
         users, devices, certifications, assignments, schedules, 
-        break_plans, dispatch_orders, absences, attendance_logs, incidents,
+        break_plans, dispatch_orders, dispatch_tasks, absences, attendance_logs, incidents,
         state_events, post_state, site_state, post_travel, policies,
         shift_templates, post_rules, posts, guards 
-      CASCADE;
+      RESTART IDENTITY CASCADE;
     `);
 
     // 1. Posts & Post Rules
@@ -186,6 +186,7 @@ export async function runSeed(connectionString?: string) {
       ["legal.ot_cap_year_min", 12000],
       ["legal.night_start", "22:00"],
       ["legal.night_end", "06:00"],
+      ["legal.cost_multipliers", { regularDay: 1.0, regularNight: 1.3, otDay: 1.5, otNight: 2.0 }],
       ["dispatch.ack_timeout_sec", 60],
       ["dispatch.rank_weights", { distance: 1, ot: 2, load: 1.5 }]
     ];

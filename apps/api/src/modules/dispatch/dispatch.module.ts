@@ -11,6 +11,14 @@ import { MealPlannerService } from "./meal-planner/meal-planner.service.js";
 import { LegalGuardService } from "./legal-guard/legal-guard.service.js";
 import { BreakPlansController } from "./break-plans.controller.js";
 import { LegalGuardController } from "./legal-guard/legal-guard.controller.js";
+import { RankingService } from "./engine/ranking.service.js";
+import { FillVacancyService } from "./engine/fill-vacancy.service.js";
+import { AbsenceHandler } from "./engine/handlers/absence.handler.js";
+import { MotionHandler } from "./engine/handlers/motion.handler.js";
+import { DispatchQueueService } from "./engine/queue.service.js";
+import { DispatchController } from "./dispatch.controller.js";
+import { AbsencesService } from "./absences.service.js";
+import { AbsencesController } from "./absences.controller.js";
 
 @Module({
   imports: [DatabaseModule, ClockModule, EventsModule, PoliciesModule],
@@ -19,15 +27,32 @@ import { LegalGuardController } from "./legal-guard/legal-guard.controller.js";
     OutboxService,
     DispatchService,
     MealPlannerService,
-    LegalGuardService
+    LegalGuardService,
+    RankingService,
+    FillVacancyService,
+    AbsenceHandler,
+    MotionHandler,
+    DispatchQueueService,
+    AbsencesService
   ],
-  controllers: [StateController, BreakPlansController, LegalGuardController],
+  controllers: [
+    StateController,
+    BreakPlansController,
+    LegalGuardController,
+    DispatchController,
+    AbsencesController
+  ],
   exports: [
     DispatchService,
     StateMachineService,
     OutboxService,
     MealPlannerService,
-    LegalGuardService
+    LegalGuardService,
+    RankingService,
+    FillVacancyService,
+    DispatchQueueService,
+    AbsencesService
   ]
 })
 export class DispatchModule {}
+

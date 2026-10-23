@@ -119,3 +119,38 @@
   - Candidates exceeding `legal.ot_cap_month_min` (2400 min / 40h) or `legal.ot_cap_year_min` (12000 min / 200h) are rejected with `MONTHLY_OT_CAP_EXCEEDED` / `YEARLY_OT_CAP_EXCEEDED`.
 - **Cost Estimation Multipliers**:
   - Cost helper evaluates hourly slices: standard day hours (1.0x), night hours 22:00–06:00 (1.3x), day overtime (1.5x), and night overtime (2.0x), matching Labor Code guidance and spec §9 rule 6.
+
+### 2.11 Dispatch Engine, Concurrency & Absences (M6)
+- **Per-Shift Advisory Lock Serialization**:
+  - Per spec §8.1 and hard rule #5, concurrent dispatches serialize on the transaction-level lock `pg_advisory_xact_lock(hashtextextended('<site>:<shiftKey>', 0))`.
+  - Concurrency does NOT use `SKIP LOCKED` because that would invert dispatch priority.
+  - Serialization errors (SQLSTATE `40001` serialization_failure, `40P01` deadlock_detected) are automatically caught and retried up to 3 times before raising an exception.
+- **Drain-and-Sort Priority Queue**:
+  - When simultaneous events occur (e.g. 3 guards reporting sick at 07:30 in Scenario A1), tasks are enqueued into `dispatch_tasks` table and then drained in priority order:
+    1. `EMERGENCY` (0) — fire alarms, immediate evacuation
+    2. `TIER1_VACANCY` (1) — Zero-Vacancy posts (G1, G4, G5, P1, P6, P7, P8)
+    3. `MEAL` (2) — meal relief replan, float absences
+    4. `TIER2_VACANCY` (3) — Tier 2 posts (G2, G3, G6, P2, P3, P4, P5)
+    5. `OTHER` (4) — routine tasks, motion checks
+- **6-Step FillVacancy Cascade**:
+  - Step 1: Available `FLOAT_T1` (`TIER1_RELIEF`) float guards not currently stationed.
+  - Step 2: Available `FLOAT_GEN` (`GENERAL`) float guards.
+  - Step 3: Pull guard from active Tier-2 post, provided source post has a safe fallback:
+    - Merged with occupied paired post (`COVERED_BY_PAIR`), or
+    - Accepts temporary planned gap (`VACANT_PLANNED` within `max_vacant_sec` tolerance).
+  - Step 4: Available on-duty `SUPERVISOR` as last resort.
+  - Step 5: Off-shift call-in (`EARLY_CALL_IN` or `STAY_OVER`) validated against `LegalGuardService` (12h min rest, weekly rest days, OT limits, certificate validity) with cost estimation.
+  - Step 6: Escalate to dispatcher (`ESCALATE_DISPATCHER`).
+- **Candidate Ranking Function**:
+  - Scored as: `score = w.distance * travel_min + w.ot * (ot_minutes_month / 60) + w.load * dispatches_today`.
+  - Default weights `w = { distance: 1.0, ot: 2.0, load: 1.5 }` read from `policies` table (`dispatch.rank_weights`).
+  - Ties are deterministically broken by `guard.id ASC`.
+- **Order Lifecycle & Stale Expiration**:
+  - Dispatched proposals are recorded in `dispatch_orders` with status `SENT`.
+  - Guard acknowledgment (`POST /dispatch/orders/:id/ack`) transitions order to `ACKED`, post to `OCCUPIED`, and records active assignment in the same transaction.
+  - Guard decline (`POST /dispatch/orders/:id/decline`) marks order `DECLINED` and enqueues automated re-fill to try the next cascade candidate.
+  - Automated check (`checkExpiredOrders`) finds `SENT` orders exceeding `dispatch.ack_timeout_sec` (default 60s), marks them `EXPIRED`, and triggers re-fill.
+  - Manual override (`POST /dispatch/override`) allows dispatcher intervention with explain logs and audit trails.
+- **Absences Reporting & Idempotency**:
+  - `POST /absences` accepts an optional `Idempotency-Key` header (or `idemKey` field), preventing duplicate absences on client retries.
+  - Creating an absence cancels active assignment, sets the post to `VACANT_ALERT`, appends a `state_event`, and automatically enqueues a priority dispatch task.
