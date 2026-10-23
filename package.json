@@ -8,6 +8,11 @@
     "apps/*"
   ],
   "scripts": {
+    "dev": "concurrently -n \"api,web\" -c \"blue,green\" \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:all": "concurrently -n \"api,web,mobile\" -c \"blue,green,magenta\" \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:mobile\"",
+    "dev:api": "tsx watch apps/api/src/main.ts",
+    "dev:web": "npm run dev --workspace=@swms/web",
+    "dev:mobile": "npm run dev --workspace=@swms/mobile",
     "typecheck": "npm run --workspaces --if-present typecheck",
     "lint": "eslint . --ext .ts",
     "test": "vitest run",
@@ -27,6 +32,7 @@
     "@typescript-eslint/eslint-plugin": "^8.8.1",
     "@typescript-eslint/parser": "^8.8.1",
     "@vitest/coverage-v8": "^2.1.9",
+    "concurrently": "^10.0.6",
     "eslint": "^9.12.0",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3",
