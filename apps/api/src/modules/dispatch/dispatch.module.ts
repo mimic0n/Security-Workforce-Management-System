@@ -1,0 +1,16 @@
+import { Module } from "@nestjs/common";
+import { DatabaseModule } from "../../core/database/database.module.js";
+import { ClockModule } from "../../core/clock/clock.module.js";
+import { EventsModule } from "../../core/events/event-bus.service.js";
+import { StateMachineService } from "./state-machine/state-machine.service.js";
+import { OutboxService } from "./outbox.service.js";
+import { DispatchService } from "./dispatch.service.js";
+import { StateController } from "./state.controller.js";
+
+@Module({
+  imports: [DatabaseModule, ClockModule, EventsModule],
+  providers: [StateMachineService, OutboxService, DispatchService],
+  controllers: [StateController],
+  exports: [DispatchService, StateMachineService, OutboxService]
+})
+export class DispatchModule {}

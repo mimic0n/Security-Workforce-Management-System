@@ -78,4 +78,29 @@
   - `GET /staffing/requests` supports query filters for `status` and `shift`.
   - `POST /staffing/requests` records new requests using the injected `Clock.now()` for `created_at`, ensuring auditability and deterministic timeline coordination in simulation mode.
 
+### 2.9 State Machine, Outbox & State Endpoints (M4)
+- **Transition Table Event Granularity**:
+  - In §6.1 table row 17, `REPLACEMENT_ASSIGNED+CHECKIN` indicates that posts in `VACANT_PLANNED` or `COVERED_BY_PAIR` can transition back to `OCCUPIED` either when a replacement guard checks in (`CHECKIN_ACCEPTED`), or can transition to `VACANT_ALERT` when `REPLACEMENT_ASSIGNED` creates a replacement dispatch order. Both paths are supported in `transitions.ts`.
+  - `SHIFT_END` from `NOT_ACTIVE` is explicitly rejected (per spec: *"any (except NOT_ACTIVE)"*). From any active state, `SHIFT_END` transitions the post to `NOT_ACTIVE` and clears guard assignment and deadline.
+- **Strict Tier-1 Zero-Vacancy Invariant**:
+  - Post rules for Tier-1 posts prohibit entering `VACANT_PLANNED` or `COVERED_BY_PAIR`.
+  - Attempting `ACCEPT_PLANNED_GAP` or `MERGE_WITH_PAIR` on Tier-1 posts is rejected immediately at both the pure transition table level and database execution level with `Tier1InvariantError`.
+- **Two-Way Handshake Lock for Meal Breaks**:
+  - Guard break initiation (`POST /state/break/start`) checks that post status is `RELIEVED_FOR_MEAL` or (`HANDOVER_PENDING` with accepted float check-in).
+  - Any attempt to start break in `OCCUPIED`, `VACANT_ALERT`, or `NOT_ACTIVE` states is rejected with HTTP 400 Problem Details.
+  - Guards can only initiate breaks for their own assigned post unless acting under supervisory roles.
+- **Site-Wide Emergency Suspension**:
+  - Triggering `FIRE_ALARM` sets `site_state.mode = 'EMERGENCY'` and writes a site-level event in `state_events` (`post_id = NULL`).
+  - While in `EMERGENCY` mode, all individual post transition rules are suspended and rejected, with the exception of `SHIFT_END` (shift rollover) and `EMERGENCY_CLEARED` (which restores site mode to `NORMAL`).
+- **Optimistic Concurrency & Retry**:
+  - `DispatchService.apply(tx, event)` supports an optional `event.payload.expectedVersion` parameter, defaulting to the version locked `FOR UPDATE`.
+  - If a concurrent transaction updates the post or site version, the update affects 0 rows, triggering an `OptimisticLockError`.
+  - `DispatchService.applyWithRetry()` catches `OptimisticLockError` as well as PostgreSQL serialization conflicts (SQLSTATE `40001` / `40P01`), retrying up to 3 times before re-throwing.
+- **Monotonic Outbox Sequence & Post-Commit Delivery**:
+  - PostgreSQL sequence `site_event_seq` issues monotonically increasing sequence numbers per site for every state transition and emergency event.
+  - Outbox envelopes adhere to `{ v: 1, type, seq, ts, payload }`.
+  - `OutboxService.publishPending()` delivers pending events via `EventBusService` and timestamps `sent_at = clock_timestamp()` strictly after transaction commit.
+- **State Snapshot API**:
+  - `GET /state/snapshot` delivers `{ site, posts, lastSeq }`, querying current sequence state via `SELECT last_value, is_called FROM site_event_seq;` to provide reconnecting clients with the exact sequence marker for sync.
+
 

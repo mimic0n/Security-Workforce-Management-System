@@ -252,6 +252,8 @@ CREATE TABLE IF NOT EXISTS outbox (
   sent_at timestamptz
 );
 
+CREATE SEQUENCE IF NOT EXISTS site_event_seq START WITH 1;
+
 -- 20. Audit Log
 CREATE TABLE IF NOT EXISTS audit_log (
   id bigserial PRIMARY KEY,

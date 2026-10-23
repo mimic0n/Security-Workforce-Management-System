@@ -173,4 +173,5 @@ export type AuthUserPayload = z.infer<typeof AuthUserPayloadSchema>;
 export * from "./policies.js";
 export * from "./audit.js";
 export * from "./staffing.js";
+export * from "./state-machine.js";
 
