@@ -18,12 +18,20 @@ export interface PostContext {
   maxVacantSec?: number;
 }
 
+export interface StateMachineConfig {
+  handoverBufferMin?: number;
+  breakMinutes?: number;
+  tier1EscalateSec?: number;
+  maxVacantSec?: number;
+}
+
 export interface TransitionContext {
   post: PostContext;
   event: StateTransitionEvent;
   siteMode?: SiteMode;
   now: Date;
   extra?: {
+    config?: StateMachineConfig;
     pairPostStatus?: PostStatus;
     breakPlanExists?: boolean;
     plannedFloatId?: number;
@@ -249,7 +257,7 @@ export const TRANSITION_TABLE: readonly TransitionRule[] = [
       } else {
         // Tier 2
         const vacantSec = ctx.extra?.vacantSeconds ?? ctx.event.payload?.vacantSeconds ?? 0;
-        const maxVacantSec = ctx.post.maxVacantSec ?? 900;
+        const maxVacantSec = ctx.post.maxVacantSec ?? ctx.extra?.config?.maxVacantSec ?? 0;
         if (ctx.post.deadlineAt && ctx.now < new Date(ctx.post.deadlineAt) && vacantSec < maxVacantSec) {
           return {
             ok: false,

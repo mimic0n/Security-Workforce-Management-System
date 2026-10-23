@@ -70,19 +70,29 @@ export class StateMachineService {
         nextDeadlineAt = null;
         break;
 
-      case "MEAL_WINDOW_OPEN":
-        // Original guard remains guard_id; deadline set for handover
+      case "MEAL_WINDOW_OPEN": {
+        // Original guard remains guard_id; deadline set for handover buffer from config/payload
+        const bufferMin =
+          event.payload?.handoverBufferMin ??
+          extra?.config?.handoverBufferMin ??
+          5;
         nextDeadlineAt = event.payload?.deadlineAt
           ? new Date(event.payload.deadlineAt)
-          : new Date(now.getTime() + (event.payload?.handoverBufferMin ?? 5) * 60 * 1000);
+          : new Date(now.getTime() + bufferMin * 60 * 1000);
         break;
+      }
 
-      case "FLOAT_CHECKIN":
-        // Post relieved for meal; deadline set for slot end
+      case "FLOAT_CHECKIN": {
+        // Post relieved for meal; deadline set for slot end from config/payload
+        const breakMins =
+          event.payload?.breakMinutes ??
+          extra?.config?.breakMinutes ??
+          30;
         nextDeadlineAt = event.payload?.deadlineAt
           ? new Date(event.payload.deadlineAt)
-          : new Date(now.getTime() + (event.payload?.breakMinutes ?? 30) * 60 * 1000);
+          : new Date(now.getTime() + breakMins * 60 * 1000);
         break;
+      }
 
       case "HANDOVER_TIMEOUT":
       case "ABSENCE_REPORTED":
@@ -102,13 +112,18 @@ export class StateMachineService {
         nextDeadlineAt = post.deadlineAt;
         break;
 
-      case "PRESENCE_UNCERTAIN":
-        // Set escalate deadline (default 120s for Tier 1, or from payload)
-        const escalateSec = event.payload?.escalateAfterSec ?? (post.tier === "TIER1" ? 120 : 900);
+      case "PRESENCE_UNCERTAIN": {
+        // Set escalate deadline (configured attendance.tier1_escalate_after_sec or max_vacant_sec)
+        const escalateSec =
+          event.payload?.escalateAfterSec ??
+          (post.tier === "TIER1"
+            ? (extra?.config?.tier1EscalateSec ?? 120)
+            : (post.maxVacantSec ?? extra?.config?.maxVacantSec ?? 900));
         nextDeadlineAt = event.payload?.deadlineAt
           ? new Date(event.payload.deadlineAt)
           : new Date(now.getTime() + escalateSec * 1000);
         break;
+      }
 
       case "QR_CONFIRMED":
         nextDeadlineAt = null;

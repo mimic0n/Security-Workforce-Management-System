@@ -11,11 +11,13 @@ import {
 } from "@swms/contracts";
 import { AppModule } from "../src/app.module.js";
 import { DatabaseService } from "../src/core/database/database.service.js";
+import { EventBusService } from "../src/core/events/event-bus.service.js";
 import { CLOCK_TOKEN } from "../src/core/clock/clock.interface.js";
 import { VirtualClock } from "../src/core/clock/virtual-clock.js";
 import { DispatchService } from "../src/modules/dispatch/dispatch.service.js";
 import { OutboxService } from "../src/modules/dispatch/outbox.service.js";
 import { OptimisticLockError } from "../src/modules/dispatch/state-machine/optimistic-lock.error.js";
+import { InvalidTransitionError } from "../src/modules/dispatch/state-machine/invalid-transition.error.js";
 import { Tier1InvariantError } from "../src/modules/dispatch/state-machine/tier1-invariant.error.js";
 import { runMigration } from "../../../db/migrate.js";
 import { runSeed } from "../../../db/seed/seed.js";
@@ -23,6 +25,7 @@ import { runSeed } from "../../../db/seed/seed.js";
 describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", () => {
   let app: INestApplication;
   let db: DatabaseService;
+  let eventBus: EventBusService;
   let pool: Pool;
   let dispatchService: DispatchService;
   let outboxService: OutboxService;
@@ -53,6 +56,7 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
     await app.init();
 
     db = moduleRef.get<DatabaseService>(DatabaseService);
+    eventBus = moduleRef.get<EventBusService>(EventBusService);
     pool = (db as any).pool;
     dispatchService = moduleRef.get<DispatchService>(DispatchService);
     outboxService = moduleRef.get<OutboxService>(OutboxService);
@@ -84,7 +88,7 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
   });
 
   describe("1. Table-Driven Transitions Against Postgres DB", () => {
-    it("progresses a Tier 1 post through full lifecycle in DB", async () => {
+    it("progresses a Tier 1 post through full lifecycle in DB with complete state_events audit trail", async () => {
       // 1. SHIFT_START: NOT_ACTIVE -> VACANT_ALERT
       const res1 = await dispatchService.applyWithRetry({
         siteId: "AEON_THANH_KHE_F1",
@@ -183,6 +187,34 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
       });
       expect(res9.toStatus).toBe("NOT_ACTIVE");
       expect(res9.version).toBe(9);
+
+      // Verify complete, unbroken state_events audit trail in PostgreSQL
+      const events = await db.query(
+        `SELECT id, post_id, cause, from_status, to_status 
+         FROM state_events 
+         WHERE post_id = 'G1' 
+         ORDER BY id ASC;`
+      );
+      expect(events.rows.length).toBe(9);
+      expect(events.rows.map((r) => r.cause)).toEqual([
+        "SHIFT_START",
+        "CHECKIN_ACCEPTED",
+        "MEAL_WINDOW_OPEN",
+        "FLOAT_CHECKIN",
+        "ORIGINAL_BACK",
+        "PRESENCE_UNCERTAIN",
+        "QR_CONFIRMED",
+        "ABSENCE_REPORTED",
+        "SHIFT_END"
+      ]);
+
+      // Verify post_state in DB matches final expectation
+      const finalPost = await db.query(
+        `SELECT status, guard_id, deadline_at, version FROM post_state WHERE post_id = 'G1';`
+      );
+      expect(finalPost.rows[0].status).toBe("NOT_ACTIVE");
+      expect(finalPost.rows[0].guard_id).toBeNull();
+      expect(Number(finalPost.rows[0].version)).toBe(9);
     });
   });
 
@@ -217,6 +249,40 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
       const eventsCount2 = await db.query(`SELECT count(*) FROM state_events WHERE idem_key = $1;`, [idemKey]);
       expect(Number(eventsCount2.rows[0].count)).toBe(1);
     });
+
+    it("handles concurrent executions with identical idem_key safely without throwing unhandled unique violation", async () => {
+      const sharedIdemKey = "concurrent-idem-key-" + Math.random().toString(36).substring(7);
+      await db.query(`UPDATE post_state SET status = 'NOT_ACTIVE', version = 0 WHERE post_id = 'G2';`);
+
+      const [resA, resB] = await Promise.all([
+        dispatchService.applyWithRetry({
+          siteId: "AEON_THANH_KHE_F1",
+          postId: "G2",
+          kind: "SHIFT_START",
+          idemKey: sharedIdemKey,
+          payload: { postActive: true }
+        }),
+        dispatchService.applyWithRetry({
+          siteId: "AEON_THANH_KHE_F1",
+          postId: "G2",
+          kind: "SHIFT_START",
+          idemKey: sharedIdemKey,
+          payload: { postActive: true }
+        })
+      ]);
+
+      expect(resA.success).toBe(true);
+      expect(resB.success).toBe(true);
+
+      // One must be fresh, the other replay
+      const replays = [resA.isReplay, resB.isReplay];
+      expect(replays).toContain(false);
+      expect(replays).toContain(true);
+
+      // Only one state_events row created in DB
+      const evRes = await db.query(`SELECT count(*) FROM state_events WHERE idem_key = $1;`, [sharedIdemKey]);
+      expect(Number(evRes.rows[0].count)).toBe(1);
+    });
   });
 
   describe("3. Optimistic-Lock Conflict & Retry", () => {
@@ -242,19 +308,26 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
       }
     });
 
-    it("automatically retries and succeeds when using applyWithRetry under concurrent update", async () => {
-      // Set G1 to clean state
+    it("automatically recovers and retries when an initial attempt has a stale expectedVersion conflict", async () => {
+      // Set G1 to clean state at version 5
       await db.query(`UPDATE post_state SET status = 'NOT_ACTIVE', version = 5 WHERE post_id = 'G1';`);
 
+      // Provide an outdated expectedVersion: 4 (simulating client snapshot conflict)
+      // Attempt 1 fails with OptimisticLockError, applyWithRetry recovers, clears stale version,
+      // and successfully re-applies against the latest version 5 in attempt 2!
       const res = await dispatchService.applyWithRetry({
         siteId: "AEON_THANH_KHE_F1",
         postId: "G1",
         kind: "SHIFT_START",
-        payload: {}
+        payload: { expectedVersion: 4 }
       });
 
       expect(res.success).toBe(true);
       expect(res.version).toBe(6);
+
+      const postDb = await db.query(`SELECT status, version FROM post_state WHERE post_id = 'G1';`);
+      expect(postDb.rows[0].status).toBe("VACANT_ALERT");
+      expect(Number(postDb.rows[0].version)).toBe(6);
     });
   });
 
@@ -313,50 +386,80 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
 
       expect(res.toStatus).toBe("COVERED_BY_PAIR");
     });
+
+    it("strictly rejects MERGE_WITH_PAIR on Tier 2 post (P2) if pair post (P3) is NOT OCCUPIED", async () => {
+      await db.query(`UPDATE post_state SET status = 'VACANT_ALERT', version = 1 WHERE post_id = 'P2';`);
+      await db.query(`UPDATE post_state SET status = 'VACANT_ALERT', version = 1 WHERE post_id = 'P3';`);
+
+      await expect(
+        dispatchService.applyWithRetry({
+          siteId: "AEON_THANH_KHE_F1",
+          postId: "P2",
+          kind: "MERGE_WITH_PAIR",
+          payload: { pairGuardId: 10 }
+        })
+      ).rejects.toThrow(InvalidTransitionError);
+    });
   });
 
   describe("5. Outbox Monotonic Sequence & Delivery", () => {
-    it("generates strictly monotonic seq numbers per site in outbox table", async () => {
+    it("generates strictly monotonic seq numbers per site and emits to EventBus strictly post-commit", async () => {
       await db.query(`DELETE FROM outbox;`);
 
-      // Trigger 3 transitions
-      await dispatchService.applyWithRetry({
-        siteId: "AEON_THANH_KHE_F1",
-        postId: "G1",
-        kind: "SHIFT_START",
-        payload: {}
-      });
+      const emittedEnvelopes: any[] = [];
+      const listener = (payload: any) => {
+        emittedEnvelopes.push(payload);
+      };
+      eventBus.on("post.state_changed", listener);
 
-      await dispatchService.applyWithRetry({
-        siteId: "AEON_THANH_KHE_F1",
-        postId: "G1",
-        kind: "CHECKIN_ACCEPTED",
-        payload: { guardId }
-      });
+      try {
+        // Trigger 3 transitions
+        await dispatchService.applyWithRetry({
+          siteId: "AEON_THANH_KHE_F1",
+          postId: "G1",
+          kind: "SHIFT_START",
+          payload: {}
+        });
 
-      await dispatchService.applyWithRetry({
-        siteId: "AEON_THANH_KHE_F1",
-        postId: "G1",
-        kind: "PRESENCE_UNCERTAIN",
-        payload: {}
-      });
+        await dispatchService.applyWithRetry({
+          siteId: "AEON_THANH_KHE_F1",
+          postId: "G1",
+          kind: "CHECKIN_ACCEPTED",
+          payload: { guardId }
+        });
 
-      const outboxRes = await db.query(
-        `SELECT id, topic, payload, sent_at FROM outbox ORDER BY id ASC;`
-      );
-      expect(outboxRes.rows.length).toBe(3);
+        await dispatchService.applyWithRetry({
+          siteId: "AEON_THANH_KHE_F1",
+          postId: "G1",
+          kind: "PRESENCE_UNCERTAIN",
+          payload: {}
+        });
 
-      const seqs = outboxRes.rows.map((r) => {
-        const p = typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
-        return p.seq;
-      });
+        const outboxRes = await db.query(
+          `SELECT id, topic, payload, sent_at FROM outbox ORDER BY id ASC;`
+        );
+        expect(outboxRes.rows.length).toBe(3);
 
-      // Verify sequence is strictly increasing
-      expect(seqs[1]).toBeGreaterThan(seqs[0]);
-      expect(seqs[2]).toBeGreaterThan(seqs[1]);
+        const seqs = outboxRes.rows.map((r) => {
+          const p = typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
+          return p.seq;
+        });
 
-      // Verify sent_at was marked after commit
-      expect(outboxRes.rows[0].sent_at).not.toBeNull();
+        // Verify sequence is strictly increasing
+        expect(seqs[1]).toBeGreaterThan(seqs[0]);
+        expect(seqs[2]).toBeGreaterThan(seqs[1]);
+
+        // Verify sent_at was marked on ALL rows after commit
+        expect(outboxRes.rows.every((r) => r.sent_at !== null)).toBe(true);
+
+        // Verify event bus received all envelopes with v, seq, ts
+        expect(emittedEnvelopes.length).toBe(3);
+        expect(emittedEnvelopes[0].v).toBe(1);
+        expect(emittedEnvelopes[0].seq).toBe(seqs[0]);
+        expect(typeof emittedEnvelopes[0].ts).toBe("string");
+      } finally {
+        eventBus.off("post.state_changed", listener);
+      }
     });
   });
 
@@ -400,7 +503,7 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
       expect(okRes.body.allowed).toBe(true);
     });
 
-    it("POST /state/events executes state transition via API", async () => {
+    it("POST /state/events executes state transition via API and writes to DB", async () => {
       const res = await request(app.getHttpServer())
         .post("/state/events")
         .set("Authorization", `Bearer ${adminToken}`)
@@ -414,11 +517,20 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
       expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
       expect(res.body.toStatus).toBe("VACANT_ALERT");
+
+      // Assert post_state in DB was updated
+      const postDb = await db.query(`SELECT status, version FROM post_state WHERE post_id = 'G3';`);
+      expect(postDb.rows[0].status).toBe("VACANT_ALERT");
+
+      // Assert state_events row created
+      const eventDb = await db.query(`SELECT cause, post_id FROM state_events WHERE post_id = 'G3';`);
+      expect(eventDb.rows.length).toBe(1);
+      expect(eventDb.rows[0].cause).toBe("SHIFT_START");
     });
   });
 
   describe("7. Emergency Mode Workflow", () => {
-    it("FIRE_ALARM transitions site to EMERGENCY, suspends post events, EMERGENCY_CLEARED restores", async () => {
+    it("FIRE_ALARM transitions site to EMERGENCY, suspends post events with InvalidTransitionError, EMERGENCY_CLEARED restores", async () => {
       // 1. Fire alarm
       const fireRes = await dispatchService.applyWithRetry({
         siteId: "AEON_THANH_KHE_F1",
@@ -431,7 +543,7 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
       const siteDb = await db.query(`SELECT mode FROM site_state WHERE site_id = 'AEON_THANH_KHE_F1';`);
       expect(siteDb.rows[0].mode).toBe("EMERGENCY");
 
-      // 2. Normal post transition must be rejected during EMERGENCY
+      // 2. Normal post transition must be rejected during EMERGENCY with specific InvalidTransitionError
       await expect(
         dispatchService.applyWithRetry({
           siteId: "AEON_THANH_KHE_F1",
@@ -439,7 +551,18 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
           kind: "SHIFT_START",
           payload: {}
         })
-      ).rejects.toThrow();
+      ).rejects.toThrow(InvalidTransitionError);
+
+      try {
+        await dispatchService.applyWithRetry({
+          siteId: "AEON_THANH_KHE_F1",
+          postId: "G1",
+          kind: "SHIFT_START",
+          payload: {}
+        });
+      } catch (err: any) {
+        expect(err.message).toContain("Per-post transitions are suspended while site is in EMERGENCY mode");
+      }
 
       // 3. Clear emergency
       const clearRes = await dispatchService.applyWithRetry({
@@ -452,6 +575,49 @@ describe("Milestone M4 Acceptance Criteria — State Machine, Events & Outbox", 
 
       const siteDbAfter = await db.query(`SELECT mode FROM site_state WHERE site_id = 'AEON_THANH_KHE_F1';`);
       expect(siteDbAfter.rows[0].mode).toBe("NORMAL");
+    });
+  });
+
+  describe("8. Policy Dynamism & No Hardcoded Business Constants (Rule #2)", () => {
+    it("dynamically reads updated meal.handover_buffer_min policy from ConfigService without restarting", async () => {
+      // Reset G1 to OCCUPIED
+      await db.query(`UPDATE post_state SET status = 'OCCUPIED', guard_id = 1, version = 1 WHERE post_id = 'G1';`);
+
+      // 1. First trigger with default policy (5 min)
+      const res1 = await dispatchService.applyWithRetry({
+        siteId: "AEON_THANH_KHE_F1",
+        postId: "G1",
+        kind: "MEAL_WINDOW_OPEN",
+        payload: { breakPlanId: 101, floatId: 2 }
+      });
+      const deadline1 = new Date(res1.deadlineAt!).getTime();
+      expect(deadline1 - clock.now().getTime()).toBe(5 * 60 * 1000);
+
+      // 2. Update policy to 15 min via PUT /policies/meal.handover_buffer_min
+      const putRes = await request(app.getHttpServer())
+        .put("/policies/meal.handover_buffer_min")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ value: 15 });
+      expect(putRes.status).toBe(200);
+
+      // Reset G1 to OCCUPIED
+      await db.query(`UPDATE post_state SET status = 'OCCUPIED', guard_id = 1, version = 2 WHERE post_id = 'G1';`);
+
+      // 3. Second trigger - must now dynamically compute 15 min without restarting!
+      const res2 = await dispatchService.applyWithRetry({
+        siteId: "AEON_THANH_KHE_F1",
+        postId: "G1",
+        kind: "MEAL_WINDOW_OPEN",
+        payload: { breakPlanId: 102, floatId: 2 }
+      });
+      const deadline2 = new Date(res2.deadlineAt!).getTime();
+      expect(deadline2 - clock.now().getTime()).toBe(15 * 60 * 1000);
+
+      // Restore policy back to 5 min
+      await request(app.getHttpServer())
+        .put("/policies/meal.handover_buffer_min")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ value: 5 });
     });
   });
 });

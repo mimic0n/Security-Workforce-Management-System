@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, BadRequestException } from "@nestjs/common";
+import { Injectable, Inject, NotFoundException, BadRequestException, Optional } from "@nestjs/common";
 import { PoolClient } from "pg";
 import {
   Clock,
@@ -10,6 +10,7 @@ import {
 } from "@swms/contracts";
 import { CLOCK_TOKEN } from "../../core/clock/clock.interface.js";
 import { DatabaseService } from "../../core/database/database.service.js";
+import { ConfigService } from "../policies/config.service.js";
 import { OutboxService } from "./outbox.service.js";
 import { StateMachineService } from "./state-machine/state-machine.service.js";
 import { OptimisticLockError } from "./state-machine/optimistic-lock.error.js";
@@ -22,8 +23,21 @@ export class DispatchService {
     @Inject(DatabaseService) private readonly db: DatabaseService,
     @Inject(StateMachineService) private readonly stateMachineService: StateMachineService,
     @Inject(OutboxService) private readonly outboxService: OutboxService,
-    @Inject(CLOCK_TOKEN) private readonly clock: Clock
+    @Inject(CLOCK_TOKEN) private readonly clock: Clock,
+    @Optional() @Inject(ConfigService) private readonly configService?: ConfigService
   ) {}
+
+  /**
+   * Helper to resolve the active site ID dynamically from site_state
+   */
+  async getPrimarySiteId(client?: PoolClient): Promise<string> {
+    if (client) {
+      const res = await client.query(`SELECT site_id FROM site_state LIMIT 1;`);
+      return res.rows.length > 0 ? res.rows[0].site_id : "AEON_THANH_KHE_F1";
+    }
+    const res = await this.db.query(`SELECT site_id FROM site_state LIMIT 1;`);
+    return res.rows.length > 0 ? res.rows[0].site_id : "AEON_THANH_KHE_F1";
+  }
 
   /**
    * Apply a state transition event within an existing database transaction client (tx).
@@ -31,11 +45,11 @@ export class DispatchService {
    * append-only state_events with idem_key, outbox enqueueing.
    */
   async apply(tx: PoolClient, event: StateTransitionEvent): Promise<TransitionResult> {
-    const siteId = event.siteId || "AEON_THANH_KHE_F1";
+    const siteId = event.siteId || (await this.getPrimarySiteId(tx));
     const now = event.simTs ? new Date(event.simTs) : this.clock.now();
 
-    // 1. Idempotency Check: if idemKey already processed, return stored result
-    if (event.idemKey) {
+    const resolveIdempotentResult = async (): Promise<TransitionResult | null> => {
+      if (!event.idemKey) return null;
       const existingRes = await tx.query(
         `SELECT id, site_id, post_id, from_status, to_status, payload, idem_key 
          FROM state_events 
@@ -43,50 +57,52 @@ export class DispatchService {
         [event.idemKey]
       );
 
-      if (existingRes.rows.length > 0) {
-        const row = existingRes.rows[0];
-        // Fetch current version of post or site
-        let currentVer = 0;
-        let guardId: number | null = null;
-        let deadlineAt: string | null = null;
+      if (existingRes.rows.length === 0) return null;
+      const row = existingRes.rows[0];
+      let currentVer = 0;
+      let guardId: number | null = null;
+      let deadlineAt: string | null = null;
 
-        if (row.post_id) {
-          const postState = await tx.query(
-            `SELECT version, guard_id, deadline_at FROM post_state WHERE post_id = $1;`,
-            [row.post_id]
-          );
-          if (postState.rows.length > 0) {
-            currentVer = Number(postState.rows[0].version);
-            guardId = postState.rows[0].guard_id ? Number(postState.rows[0].guard_id) : null;
-            deadlineAt = postState.rows[0].deadline_at
-              ? new Date(postState.rows[0].deadline_at).toISOString()
-              : null;
-          }
-        } else {
-          const siteState = await tx.query(
-            `SELECT version FROM site_state WHERE site_id = $1;`,
-            [siteId]
-          );
-          if (siteState.rows.length > 0) {
-            currentVer = Number(siteState.rows[0].version);
-          }
+      if (row.post_id) {
+        const postState = await tx.query(
+          `SELECT version, guard_id, deadline_at FROM post_state WHERE post_id = $1;`,
+          [row.post_id]
+        );
+        if (postState.rows.length > 0) {
+          currentVer = Number(postState.rows[0].version);
+          guardId = postState.rows[0].guard_id ? Number(postState.rows[0].guard_id) : null;
+          deadlineAt = postState.rows[0].deadline_at
+            ? new Date(postState.rows[0].deadline_at).toISOString()
+            : null;
         }
-
-        return {
-          success: true,
-          siteId: row.site_id,
-          postId: row.post_id,
-          fromStatus: row.from_status,
-          toStatus: row.to_status,
-          guardId,
-          deadlineAt,
-          version: currentVer,
-          eventId: Number(row.id),
-          idemKey: row.idem_key,
-          isReplay: true
-        };
+      } else {
+        const siteState = await tx.query(
+          `SELECT version FROM site_state WHERE site_id = $1;`,
+          [siteId]
+        );
+        if (siteState.rows.length > 0) {
+          currentVer = Number(siteState.rows[0].version);
+        }
       }
-    }
+
+      return {
+        success: true,
+        siteId: row.site_id,
+        postId: row.post_id,
+        fromStatus: row.from_status,
+        toStatus: row.to_status,
+        guardId,
+        deadlineAt,
+        version: currentVer,
+        eventId: Number(row.id),
+        idemKey: row.idem_key,
+        isReplay: true
+      };
+    };
+
+    // 1. Initial Idempotency Check: if idemKey already processed, return stored result
+    const initialReplay = await resolveIdempotentResult();
+    if (initialReplay) return initialReplay;
 
     // 2. Handle Site-wide Events (FIRE_ALARM / EMERGENCY_CLEARED)
     if (event.kind === "FIRE_ALARM" || event.kind === "EMERGENCY_CLEARED") {
@@ -101,6 +117,10 @@ export class DispatchService {
       if (siteRes.rows.length === 0) {
         throw new NotFoundException(`Site '${siteId}' not found in site_state`);
       }
+
+      // Re-check idempotency under lock in case another transaction just committed with same idem_key
+      const lockedReplay = await resolveIdempotentResult();
+      if (lockedReplay) return lockedReplay;
 
       const currentSite: SiteStateRecord = siteRes.rows[0];
       const output = this.stateMachineService.evaluateSiteTransition(currentSite, event);
@@ -195,6 +215,10 @@ export class DispatchService {
       throw new NotFoundException(`Post state for '${event.postId}' not found in post_state`);
     }
 
+    // Re-check idempotency under lock in case a concurrent transaction just committed with same idem_key
+    const lockedReplay = await resolveIdempotentResult();
+    if (lockedReplay) return lockedReplay;
+
     const currentPost = postRes.rows[0];
 
     // If MERGE_WITH_PAIR, look up pair post status if pair exists
@@ -220,12 +244,36 @@ export class DispatchService {
       maxVacantSec: postRule.max_vacant_sec
     };
 
+    // Load active policies via ConfigService
+    let handoverBufferMin = 5;
+    let tier1EscalateSec = 120;
+    if (this.configService) {
+      try {
+        handoverBufferMin = await this.configService.get<number>("meal.handover_buffer_min", now);
+        tier1EscalateSec = await this.configService.get<number>("attendance.tier1_escalate_after_sec", now);
+      } catch {
+        // Fallback to defaults if policies not yet seeded in lightweight tests
+      }
+    }
+
+    let breakMinutes = 30;
+    const shiftRes = await tx.query(`SELECT break_minutes FROM shift_templates LIMIT 1;`);
+    if (shiftRes.rows.length > 0 && shiftRes.rows[0].break_minutes != null) {
+      breakMinutes = Number(shiftRes.rows[0].break_minutes);
+    }
+
     // Evaluate transition using StateMachineService
     const output = this.stateMachineService.evaluatePostTransition(
       postContext,
       event,
       siteMode,
       {
+        config: {
+          handoverBufferMin,
+          breakMinutes,
+          tier1EscalateSec,
+          maxVacantSec: postRule.max_vacant_sec
+        },
         pairPostStatus,
         breakPlanExists: event.payload?.breakPlanExists,
         plannedFloatId: event.payload?.plannedFloatId,
@@ -311,23 +359,32 @@ export class DispatchService {
     maxRetries = 3
   ): Promise<TransitionResult> {
     let attempt = 0;
+    const workingEvent: StateTransitionEvent = {
+      ...event,
+      payload: event.payload ? { ...event.payload } : {}
+    };
+
     while (attempt < maxRetries) {
       attempt++;
       try {
         const result = await this.db.transaction(async (tx) => {
-          return await this.apply(tx, event);
+          return await this.apply(tx, workingEvent);
         });
 
-        // Publish outbox after commit
+        // Publish outbox strictly post-commit
         await this.outboxService.publishPending();
 
         return result;
       } catch (err: any) {
         const isOptimisticLock = err instanceof OptimisticLockError;
-        const isPostgresRetryable = err?.code === "40001" || err?.code === "40P01";
+        const isPostgresRetryable =
+          err?.code === "40001" || err?.code === "40P01" || err?.code === "23505";
 
         if ((isOptimisticLock || isPostgresRetryable) && attempt < maxRetries) {
-          // Retry conflict
+          // If optimistic lock failed due to explicit stale expectedVersion, refresh for retry
+          if (workingEvent.payload?.expectedVersion !== undefined) {
+            delete workingEvent.payload.expectedVersion;
+          }
           continue;
         }
         throw err;
@@ -371,15 +428,16 @@ export class DispatchService {
   /**
    * Retrieve current state snapshot for the site (§12)
    */
-  async getStateSnapshot(siteId = "AEON_THANH_KHE_F1"): Promise<StateSnapshotResponse> {
+  async getStateSnapshot(siteId?: string): Promise<StateSnapshotResponse> {
+    const effectiveSiteId = siteId || (await this.getPrimarySiteId());
     const siteRes = await this.db.query(
       `SELECT site_id, mode, version, since FROM site_state WHERE site_id = $1;`,
-      [siteId]
+      [effectiveSiteId]
     );
 
     const site: SiteStateRecord = siteRes.rows.length > 0
       ? siteRes.rows[0]
-      : { site_id: siteId, mode: "NORMAL", version: 0, since: this.clock.now() };
+      : { site_id: effectiveSiteId, mode: "NORMAL", version: 0, since: this.clock.now() };
 
     const postsRes = await this.db.query(
       `SELECT post_id, status, guard_id, since, deadline_at, version 
