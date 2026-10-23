@@ -50,6 +50,8 @@ import { AbsencesController } from "./absences.controller.js";
     LegalGuardService,
     RankingService,
     FillVacancyService,
+    AbsenceHandler,
+    MotionHandler,
     DispatchQueueService,
     AbsencesService
   ]

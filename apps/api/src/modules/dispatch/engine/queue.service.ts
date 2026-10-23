@@ -1,4 +1,4 @@
-import { Injectable, Inject, Optional } from "@nestjs/common";
+import { Injectable, Inject, Optional, forwardRef } from "@nestjs/common";
 import { PoolClient } from "pg";
 import { Clock, DispatchPriority, DispatchTask } from "@swms/contracts";
 import { CLOCK_TOKEN } from "../../../core/clock/clock.interface.js";
@@ -8,6 +8,7 @@ import { AbsenceHandler } from "./handlers/absence.handler.js";
 import { MotionHandler } from "./handlers/motion.handler.js";
 import { FillVacancyService } from "./fill-vacancy.service.js";
 import { MealPlannerService } from "../meal-planner/meal-planner.service.js";
+import { DispatchService } from "../dispatch.service.js";
 
 @Injectable()
 export class DispatchQueueService {
@@ -18,13 +19,19 @@ export class DispatchQueueService {
     @Inject(FillVacancyService) private readonly fillVacancyService: FillVacancyService,
     @Inject(MealPlannerService) private readonly mealPlannerService: MealPlannerService,
     @Inject(OutboxService) private readonly outboxService: OutboxService,
-    @Inject(CLOCK_TOKEN) private readonly clock: Clock
+    @Inject(CLOCK_TOKEN) private readonly clock: Clock,
+    @Optional() @Inject(forwardRef(() => DispatchService)) private readonly dispatchService?: DispatchService
   ) {}
 
   /**
-   * Helper to derive task priority based on kind and payload
+   * Helper to derive task priority based on kind, payload, and DB post_rules
+   * Rule #2: Tier is read dynamically from post_rules, never hardcoded!
    */
-  derivePriority(kind: string, payload: Record<string, any>): number {
+  async derivePriority(
+    kind: string,
+    payload: Record<string, any>,
+    client?: PoolClient
+  ): Promise<number> {
     if (kind === "FIRE_ALARM") return DispatchPriority.EMERGENCY; // 0
     if (kind === "CAMERA_MOTION") return DispatchPriority.TIER1_VACANCY; // 1
 
@@ -39,10 +46,16 @@ export class DispatchQueueService {
       if (payload.tier === "TIER2" || payload.isTier2) {
         return DispatchPriority.TIER2_VACANCY; // 3
       }
-      // If postId given, resolve tier from known Tier 1 posts
+      // If postId given, resolve tier dynamically from DB post_rules
       if (payload.postId) {
-        const t1Posts = new Set(["G1", "G4", "G5", "P1", "P6", "P7", "P8"]);
-        if (t1Posts.has(payload.postId)) return DispatchPriority.TIER1_VACANCY;
+        const query = `SELECT tier FROM post_rules WHERE post_id = $1;`;
+        const res = client
+          ? await client.query(query, [payload.postId])
+          : await this.db.query(query, [payload.postId]);
+
+        if (res.rows.length > 0 && res.rows[0].tier === "TIER1") {
+          return DispatchPriority.TIER1_VACANCY;
+        }
         return DispatchPriority.TIER2_VACANCY;
       }
     }
@@ -74,7 +87,7 @@ export class DispatchQueueService {
       const priority =
         task.priority !== undefined
           ? task.priority
-          : this.derivePriority(task.kind, payload);
+          : await this.derivePriority(task.kind, payload);
       const now = this.clock.now();
 
       const insRes = await this.db.query(
@@ -113,7 +126,7 @@ export class DispatchQueueService {
     const priority =
       task.priority !== undefined
         ? task.priority
-        : this.derivePriority(task.kind, payload);
+        : await this.derivePriority(task.kind, payload);
     const now = this.clock.now();
 
     // Check idempotency first if idemKey provided
@@ -227,11 +240,21 @@ export class DispatchQueueService {
               date: payload.date
             });
           } else if (task.kind === "FIRE_ALARM") {
-            await client.query(
-              `UPDATE site_state SET mode = 'EMERGENCY', since = $1, version = version + 1 WHERE site_id = $2;`,
-              [now, siteId]
-            );
-            taskResult = { mode: "EMERGENCY" };
+            if (this.dispatchService) {
+              taskResult = await this.dispatchService.apply(client, {
+                kind: "FIRE_ALARM",
+                payload: payload || {},
+                siteId,
+                simTs: now,
+                idemKey: task.idem_key || undefined
+              });
+            } else {
+              await client.query(
+                `UPDATE site_state SET mode = 'EMERGENCY', since = $1, version = version + 1 WHERE site_id = $2;`,
+                [now, siteId]
+              );
+              taskResult = { mode: "EMERGENCY" };
+            }
           } else {
             taskResult = { status: "IGNORED", kind: task.kind };
           }

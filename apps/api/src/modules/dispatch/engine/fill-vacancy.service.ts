@@ -1,4 +1,4 @@
-import { Injectable, Inject, Optional, NotFoundException } from "@nestjs/common";
+import { Injectable, Inject, Optional, NotFoundException, forwardRef } from "@nestjs/common";
 import { PoolClient } from "pg";
 import { Clock } from "@swms/contracts";
 import { CLOCK_TOKEN } from "../../../core/clock/clock.interface.js";
@@ -7,6 +7,7 @@ import { ConfigService } from "../../policies/config.service.js";
 import { RankingService } from "./ranking.service.js";
 import { LegalGuardService } from "../legal-guard/legal-guard.service.js";
 import { CandidateGuard, CascadeResult } from "./types.js";
+import { DispatchService } from "../dispatch.service.js";
 
 @Injectable()
 export class FillVacancyService {
@@ -15,7 +16,8 @@ export class FillVacancyService {
     @Inject(RankingService) private readonly rankingService: RankingService,
     @Inject(LegalGuardService) private readonly legalGuardService: LegalGuardService,
     @Inject(CLOCK_TOKEN) private readonly clock: Clock,
-    @Optional() @Inject(ConfigService) private readonly configService?: ConfigService
+    @Optional() @Inject(ConfigService) private readonly configService?: ConfigService,
+    @Optional() @Inject(forwardRef(() => DispatchService)) private readonly dispatchService?: DispatchService
   ) {}
 
   /**
@@ -49,6 +51,28 @@ export class FillVacancyService {
     const postRule = postRuleRes.rows[0];
     const isTier1 = postRule.tier === "TIER1";
 
+    // If post is currently NOT_ACTIVE, initialize it to VACANT_ALERT via SHIFT_START
+    const currentPostStateRes = await client.query(
+      `SELECT status FROM post_state WHERE post_id = $1;`,
+      [params.postId]
+    );
+    if (currentPostStateRes.rows.length > 0 && currentPostStateRes.rows[0].status === "NOT_ACTIVE") {
+      if (this.dispatchService) {
+        await this.dispatchService.apply(client, {
+          kind: "SHIFT_START",
+          postId: params.postId,
+          payload: { postActiveThisShift: true },
+          siteId,
+          simTs: now
+        });
+      } else {
+        await client.query(
+          `UPDATE post_state SET status = 'VACANT_ALERT', since = $1, version = version + 1 WHERE post_id = $2;`,
+          [now, params.postId]
+        );
+      }
+    }
+
     // Parse shiftKey (format: YYYY-MM-DD:SHIFT or YYYY-MM-DD:SHIFT:SUFFIX)
     const shiftParts = params.shiftKey.split(":");
     const forDate = shiftParts[0] || now.toISOString().slice(0, 10);
@@ -73,20 +97,31 @@ export class FillVacancyService {
         if (pairStateRes.rows.length > 0 && pairStateRes.rows[0].status === "OCCUPIED" && pairStateRes.rows[0].guard_id) {
           const pairGuardId = Number(pairStateRes.rows[0].guard_id);
 
-          // Update this post to COVERED_BY_PAIR
-          await client.query(
-            `UPDATE post_state 
-             SET status = 'COVERED_BY_PAIR', guard_id = $1, since = $2, deadline_at = NULL, version = version + 1 
-             WHERE post_id = $3;`,
-            [pairGuardId, now, params.postId]
-          );
+          // Update this post to COVERED_BY_PAIR via single entry point apply()
+          if (this.dispatchService) {
+            await this.dispatchService.apply(client, {
+              kind: "MERGE_WITH_PAIR",
+              postId: params.postId,
+              actorId: pairGuardId,
+              payload: { pairId, guardId: pairGuardId },
+              siteId,
+              simTs: now,
+              idemKey: params.idemKey ? `${params.idemKey}_merge` : undefined
+            });
+          } else {
+            await client.query(
+              `UPDATE post_state 
+               SET status = 'COVERED_BY_PAIR', guard_id = $1, since = $2, deadline_at = NULL, version = version + 1 
+               WHERE post_id = $3;`,
+              [pairGuardId, now, params.postId]
+            );
 
-          // Record state event
-          await client.query(
-            `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
-             VALUES ($1, $2, 'VACANT_ALERT', 'COVERED_BY_PAIR', 'MERGE_WITH_PAIR', NULL, $3, $4, clock_timestamp());`,
-            [siteId, params.postId, JSON.stringify({ pairId, guardId: pairGuardId }), now]
-          );
+            await client.query(
+              `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
+               VALUES ($1, $2, 'VACANT_ALERT', 'COVERED_BY_PAIR', 'MERGE_WITH_PAIR', NULL, $3, $4, clock_timestamp());`,
+              [siteId, params.postId, JSON.stringify({ pairId, guardId: pairGuardId }), now]
+            );
+          }
 
           const action = {
             action: "MERGE_POST",
@@ -139,18 +174,29 @@ export class FillVacancyService {
 
       // 2. Accept VACANT_PLANNED if under max_vacant_sec
       if (postRule.max_vacant_sec > 0) {
-        await client.query(
-          `UPDATE post_state 
-           SET status = 'VACANT_PLANNED', guard_id = NULL, since = $1, deadline_at = $2, version = version + 1 
-           WHERE post_id = $3;`,
-          [now, new Date(now.getTime() + postRule.max_vacant_sec * 1000), params.postId]
-        );
+        if (this.dispatchService) {
+          await this.dispatchService.apply(client, {
+            kind: "ACCEPT_PLANNED_GAP",
+            postId: params.postId,
+            payload: { maxVacantSec: postRule.max_vacant_sec },
+            siteId,
+            simTs: now,
+            idemKey: params.idemKey ? `${params.idemKey}_gap` : undefined
+          });
+        } else {
+          await client.query(
+            `UPDATE post_state 
+             SET status = 'VACANT_PLANNED', guard_id = NULL, since = $1, deadline_at = $2, version = version + 1 
+             WHERE post_id = $3;`,
+            [now, new Date(now.getTime() + postRule.max_vacant_sec * 1000), params.postId]
+          );
 
-        await client.query(
-          `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
-           VALUES ($1, $2, 'VACANT_ALERT', 'VACANT_PLANNED', 'ACCEPT_PLANNED_GAP', NULL, $3, $4, clock_timestamp());`,
-          [siteId, params.postId, JSON.stringify({ maxVacantSec: postRule.max_vacant_sec }), now]
-        );
+          await client.query(
+            `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
+             VALUES ($1, $2, 'VACANT_ALERT', 'VACANT_PLANNED', 'ACCEPT_PLANNED_GAP', NULL, $3, $4, clock_timestamp());`,
+            [siteId, params.postId, JSON.stringify({ maxVacantSec: postRule.max_vacant_sec }), now]
+          );
+        }
 
         const action = {
           action: "ACCEPT_GAP",
@@ -221,7 +267,7 @@ export class FillVacancyService {
       return candidates;
     };
 
-    // Helper: assign winning guard to post and update DB state
+    // Helper: assign winning guard to post and update DB state via apply()
     const executeDirectAssignment = async (
       step: number,
       stepName: string,
@@ -229,20 +275,45 @@ export class FillVacancyService {
       score: number,
       actionReason: string
     ): Promise<CascadeResult> => {
-      // 1. Update post_state to OCCUPIED
-      await client.query(
-        `UPDATE post_state 
-         SET status = 'OCCUPIED', guard_id = $1, since = $2, deadline_at = NULL, version = version + 1 
-         WHERE post_id = $3;`,
-        [winner.id, now, params.postId]
-      );
+      // 1. Update post_state to OCCUPIED via single entry point apply()
+      if (this.dispatchService) {
+        await this.dispatchService.apply(client, {
+          kind: "CHECKIN_ACCEPTED",
+          postId: params.postId,
+          actorId: winner.id,
+          payload: { guardId: winner.id, stepName, step },
+          siteId,
+          simTs: now,
+          idemKey: params.idemKey ? `${params.idemKey}_occ_${params.postId}` : undefined
+        });
+      } else {
+        await client.query(
+          `UPDATE post_state 
+           SET status = 'OCCUPIED', guard_id = $1, since = $2, deadline_at = NULL, version = version + 1 
+           WHERE post_id = $3;`,
+          [winner.id, now, params.postId]
+        );
 
-      // 2. Append state_events
-      await client.query(
-        `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
-         VALUES ($1, $2, 'VACANT_ALERT', 'OCCUPIED', 'REPLACEMENT_ASSIGNED', NULL, $3, $4, clock_timestamp());`,
-        [siteId, params.postId, JSON.stringify({ guardId: winner.id, stepName }), now]
+        await client.query(
+          `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
+           VALUES ($1, $2, 'VACANT_ALERT', 'OCCUPIED', 'REPLACEMENT_ASSIGNED', NULL, $3, $4, clock_timestamp());`,
+          [siteId, params.postId, JSON.stringify({ guardId: winner.id, stepName }), now]
+        );
+      }
+
+      // Determine shift duration dynamically from shift_templates
+      const shiftTplRes = await client.query(
+        `SELECT start_time, end_time FROM shift_templates WHERE code = $1;`,
+        [forShift]
       );
+      let shiftDurationMinutes = 480;
+      if (shiftTplRes.rows.length > 0) {
+        const [sh, sm] = shiftTplRes.rows[0].start_time.split(":").map(Number);
+        const [eh, em] = shiftTplRes.rows[0].end_time.split(":").map(Number);
+        let diffMin = (eh * 60 + em) - (sh * 60 + sm);
+        if (diffMin <= 0) diffMin += 24 * 60;
+        shiftDurationMinutes = diffMin;
+      }
 
       // 3. Update existing assignment or insert new DISPATCH assignment
       const existingAssign = await client.query(
@@ -259,8 +330,8 @@ export class FillVacancyService {
       } else {
         await client.query(
           `INSERT INTO assignments (guard_id, post_id, role, shift, period, source, status)
-           VALUES ($1, $2, 'FIXED', $3, tstzrange($4, ($4::timestamptz + interval '8 hours'), '[)'), 'DISPATCH', 'ACTIVE');`,
-          [winner.id, params.postId, forShift, now]
+           VALUES ($1, $2, 'FIXED', $3, tstzrange($4, ($4::timestamptz + ($5 || ' minutes')::interval), '[)'), 'DISPATCH', 'ACTIVE');`,
+          [winner.id, params.postId, forShift, now, shiftDurationMinutes]
         );
       }
 
@@ -475,34 +546,67 @@ export class FillVacancyService {
           }
         }
 
-        // Transition pulled-from post
-        await client.query(
-          `UPDATE post_state 
-           SET status = $1, guard_id = $2, since = $3, deadline_at = $4, version = version + 1 
-           WHERE post_id = $5;`,
-          [
-            sourceToStatus,
-            pairGuardId,
-            now,
-            sourceToStatus === "VACANT_PLANNED"
-              ? new Date(now.getTime() + sourcePostContext.maxVacantSec * 1000)
-              : null,
-            sourcePostId
-          ]
-        );
-
-        await client.query(
-          `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
-           VALUES ($1, $2, 'OCCUPIED', $3, $4, NULL, $5, $6, clock_timestamp());`,
-          [
+        // Transition pulled-from post via single entry point apply()
+        if (this.dispatchService) {
+          await this.dispatchService.apply(client, {
+            kind: "ABSENCE_REPORTED",
+            postId: sourcePostId,
+            actorId: pulledGuard.id,
+            payload: { pulledTo: params.postId },
             siteId,
-            sourcePostId,
-            sourceToStatus,
-            sourceCause,
-            JSON.stringify({ pulledTo: params.postId, pulledGuardId: pulledGuard.id }),
-            now
-          ]
-        );
+            simTs: now,
+            idemKey: params.idemKey ? `${params.idemKey}_pull_${sourcePostId}` : undefined
+          });
+
+          if (pairGuardId && sourcePostContext.pairWith && sourcePostContext.pairWith.length > 0) {
+            await this.dispatchService.apply(client, {
+              kind: "MERGE_WITH_PAIR",
+              postId: sourcePostId,
+              actorId: pairGuardId,
+              payload: { pairId: sourcePostContext.pairWith[0], guardId: pairGuardId },
+              siteId,
+              simTs: now,
+              idemKey: params.idemKey ? `${params.idemKey}_pull_merge_${sourcePostId}` : undefined
+            });
+          } else if (sourcePostContext.maxVacantSec > 0) {
+            await this.dispatchService.apply(client, {
+              kind: "ACCEPT_PLANNED_GAP",
+              postId: sourcePostId,
+              payload: { maxVacantSec: sourcePostContext.maxVacantSec },
+              siteId,
+              simTs: now,
+              idemKey: params.idemKey ? `${params.idemKey}_pull_gap_${sourcePostId}` : undefined
+            });
+          }
+        } else {
+          await client.query(
+            `UPDATE post_state 
+             SET status = $1, guard_id = $2, since = $3, deadline_at = $4, version = version + 1 
+             WHERE post_id = $5;`,
+            [
+              sourceToStatus,
+              pairGuardId,
+              now,
+              sourceToStatus === "VACANT_PLANNED"
+                ? new Date(now.getTime() + sourcePostContext.maxVacantSec * 1000)
+                : null,
+              sourcePostId
+            ]
+          );
+
+          await client.query(
+            `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
+             VALUES ($1, $2, 'OCCUPIED', $3, $4, NULL, $5, $6, clock_timestamp());`,
+            [
+              siteId,
+              sourcePostId,
+              sourceToStatus,
+              sourceCause,
+              JSON.stringify({ pulledTo: params.postId, pulledGuardId: pulledGuard.id }),
+              now
+            ]
+          );
+        }
 
         actions.push({
           action: "PULL_TIER2_GUARD",
@@ -585,9 +689,22 @@ export class FillVacancyService {
       estimatedCost: number;
     }> = [];
 
-    // Define shift times for LegalGuard validation
+    // Define shift times dynamically from shift_templates for LegalGuard validation
+    const shiftTplStep5 = await client.query(
+      `SELECT start_time, end_time FROM shift_templates WHERE code = $1;`,
+      [forShift]
+    );
+    let step5DurationMinutes = 480;
+    if (shiftTplStep5.rows.length > 0) {
+      const [sh, sm] = shiftTplStep5.rows[0].start_time.split(":").map(Number);
+      const [eh, em] = shiftTplStep5.rows[0].end_time.split(":").map(Number);
+      let diffMin = (eh * 60 + em) - (sh * 60 + sm);
+      if (diffMin <= 0) diffMin += 24 * 60;
+      step5DurationMinutes = diffMin;
+    }
+
     const proposedStart = now;
-    const proposedEnd = new Date(now.getTime() + 8 * 60 * 60 * 1000); // 8-hour shift segment
+    const proposedEnd = new Date(now.getTime() + step5DurationMinutes * 60 * 1000);
 
     for (const row of offShiftGuardsRes.rows) {
       const gId = Number(row.id);

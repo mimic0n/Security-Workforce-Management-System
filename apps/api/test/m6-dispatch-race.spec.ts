@@ -222,7 +222,7 @@ describe("Milestone M6 Acceptance Criteria — Dispatch Concurrency & Race Tests
         );
         expect(overlapRes.rows).toHaveLength(0);
 
-        // Invariant 2: Tier 1 (G4) must be handled before Tier 2 (P3)
+        // Invariant 2 & 3: Tier 1 (G4) must be handled before Tier 2 (P3), and state_events count matches expectation
         const eventsRes = await pool.query(
           `SELECT id, post_id, cause, to_status, real_ts 
            FROM state_events 
@@ -230,6 +230,7 @@ describe("Milestone M6 Acceptance Criteria — Dispatch Concurrency & Race Tests
            ORDER BY id ASC;`
         );
 
+        expect(eventsRes.rows.length).toBeGreaterThanOrEqual(2);
         const g4EventIdx = eventsRes.rows.findIndex((e) => e.post_id === "G4");
         const p3EventIdx = eventsRes.rows.findIndex((e) => e.post_id === "P3");
 

@@ -10,6 +10,8 @@ import { VirtualClock } from "../src/core/clock/virtual-clock.js";
 import { DispatchService } from "../src/modules/dispatch/dispatch.service.js";
 import { FillVacancyService } from "../src/modules/dispatch/engine/fill-vacancy.service.js";
 import { RankingService } from "../src/modules/dispatch/engine/ranking.service.js";
+import { DispatchQueueService } from "../src/modules/dispatch/engine/queue.service.js";
+import { MotionHandler } from "../src/modules/dispatch/engine/handlers/motion.handler.js";
 import { runMigration } from "../../../db/migrate.js";
 import { runSeed } from "../../../db/seed/seed.js";
 
@@ -286,6 +288,81 @@ describe("Milestone M6 Acceptance Criteria — Dispatch Engine & Cascade", () =>
         client.release();
       }
     });
+
+    it("Step 4: Should fill Tier 1 vacancy with SUPERVISOR when floats and pullable tier-2 guards are exhausted", async () => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN;");
+
+        // Seed an active SUPERVISOR assignment without a post assignment
+        const supRes = await client.query(`SELECT id FROM guards WHERE role = 'SUPERVISOR' LIMIT 1;`);
+        const supId = supRes.rows[0].id;
+
+        await client.query(
+          `INSERT INTO assignments (guard_id, role, shift, period, source, status)
+           VALUES ($1, 'SUPERVISOR', 'MORNING', tstzrange('2026-11-07 06:00:00+07', '2026-11-07 14:00:00+07', '[)'), 'ROSTER', 'ACTIVE');`,
+          [supId]
+        );
+
+        // Fill vacancy on G1 (Tier 1)
+        const res = await fillVacancyService.fillVacancy(client, {
+          postId: "G1",
+          shiftKey: "2026-11-07:MORNING",
+          now: clock.now()
+        });
+
+        await client.query("COMMIT;");
+
+        expect(res.success).toBe(true);
+        expect(res.step).toBe(4);
+        expect(res.stepName).toBe("SUPERVISOR");
+        expect(res.winner?.id).toBe(Number(supId));
+        expect(res.actions[0].action).toBe("ASSIGN_SUPERVISOR");
+
+        // G1 should now be OCCUPIED by supId
+        const g1State = await pool.query(`SELECT status, guard_id FROM post_state WHERE post_id = 'G1';`);
+        expect(g1State.rows[0].status).toBe("OCCUPIED");
+        expect(Number(g1State.rows[0].guard_id)).toBe(Number(supId));
+      } finally {
+        client.release();
+      }
+    });
+
+    it("Step 6: Should escalate to dispatcher (HIGH incident + staffing_request) when all cascade steps are exhausted", async () => {
+      // Deactivate all guards except one so off-shift pool is completely empty
+      await pool.query(`UPDATE guards SET active = false;`);
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN;");
+
+        const res = await fillVacancyService.fillVacancy(client, {
+          postId: "G4",
+          shiftKey: "2026-11-07:MORNING",
+          now: clock.now()
+        });
+
+        await client.query("COMMIT;");
+
+        expect(res.success).toBe(false);
+        expect(res.step).toBe(6);
+        expect(res.stepName).toBe("ESCALATE");
+        expect(res.incidentId).toBeDefined();
+        expect(res.staffingRequestId).toBeDefined();
+
+        // Verify incident in DB
+        const incRes = await pool.query(`SELECT kind, severity FROM incidents WHERE id = $1;`, [res.incidentId]);
+        expect(incRes.rows[0].kind).toBe("VACANCY");
+        expect(incRes.rows[0].severity).toBe("HIGH");
+
+        // Verify staffing request in DB
+        const reqRes = await pool.query(`SELECT qty, status FROM staffing_requests WHERE id = $1;`, [res.staffingRequestId]);
+        expect(reqRes.rows[0].qty).toBe(1);
+        expect(reqRes.rows[0].status).toBe("OPEN");
+      } finally {
+        client.release();
+      }
+    });
   });
 
   describe("3. Tier 2 Vacancy Merge & Gap Tolerance (§8.2)", () => {
@@ -489,6 +566,64 @@ describe("Milestone M6 Acceptance Criteria — Dispatch Engine & Cascade", () =>
 
       expect(replayRes.status).toBe(201);
       expect(replayRes.body.id).toBe(res.body.id);
+    });
+  });
+
+  describe("6. Event Handlers: CAMERA_MOTION & FIRE_ALARM (§8.4)", () => {
+    it("CAMERA_MOTION: assigns nearest allowed guard per policy, sends REVIEW_MOTION order, creates incident", async () => {
+      const motionHandler = app.get(MotionHandler);
+
+      // Setup: G1 guard on duty at night
+      const g1Res = await pool.query(`SELECT id FROM guards WHERE code = 'G01';`);
+      const g1Id = Number(g1Res.rows[0].id);
+      await pool.query(
+        `UPDATE post_state SET status = 'OCCUPIED', guard_id = $1 WHERE post_id = 'G1';`,
+        [g1Id]
+      );
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN;");
+
+        const result = await motionHandler.handle(client, {
+          postId: "G5",
+          shiftKey: "2026-11-07:NIGHT",
+          confidence: 0.95
+        });
+
+        await client.query("COMMIT;");
+
+        expect(result.orderKind).toBe("REVIEW_MOTION");
+        expect(result.guardId).toBe(g1Id);
+        expect(result.targetPost).toBe("G5");
+        expect(result.incidentId).toBeDefined();
+
+        // Verify incident
+        const incRes = await pool.query(`SELECT kind, severity FROM incidents WHERE id = $1;`, [result.incidentId]);
+        expect(incRes.rows[0].kind).toBe("MOTION");
+      } finally {
+        client.release();
+      }
+    });
+
+    it("FIRE_ALARM: queue processes FIRE_ALARM task, transitions site to EMERGENCY via apply, emits outbox", async () => {
+      const queueService = app.get(DispatchQueueService);
+
+      await queueService.enqueue({
+        shiftKey: "2026-11-07:MORNING",
+        kind: "FIRE_ALARM",
+        payload: { location: "Zone 1" }
+      });
+
+      // Verify site mode is EMERGENCY
+      const siteRes = await pool.query(`SELECT mode FROM site_state WHERE site_id = 'AEON_THANH_KHE_F1';`);
+      expect(siteRes.rows[0].mode).toBe("EMERGENCY");
+
+      // Verify outbox event emergency.started exists
+      const outboxRes = await pool.query(
+        `SELECT topic, payload FROM outbox WHERE topic = 'emergency.started' ORDER BY id DESC LIMIT 1;`
+      );
+      expect(outboxRes.rows.length).toBe(1);
     });
   });
 });

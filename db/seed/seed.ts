@@ -188,7 +188,8 @@ export async function runSeed(connectionString?: string) {
       ["legal.night_end", "06:00"],
       ["legal.cost_multipliers", { regularDay: 1.0, regularNight: 1.3, otDay: 1.5, otNight: 2.0 }],
       ["dispatch.ack_timeout_sec", 60],
-      ["dispatch.rank_weights", { distance: 1, ot: 2, load: 1.5 }]
+      ["dispatch.rank_weights", { distance: 1, ot: 2, load: 1.5 }],
+      ["dispatch.motion_allow_tier1_posts", { NIGHT: ["G1"] }]
     ];
 
     for (const [key, val] of defaultPolicies) {

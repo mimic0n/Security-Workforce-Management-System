@@ -263,7 +263,12 @@ export class DispatchService {
     }
 
     let breakMinutes = 30;
-    const shiftRes = await tx.query(`SELECT break_minutes FROM shift_templates LIMIT 1;`);
+    const hour = (now.getUTCHours() + 7) % 24;
+    const currentShift = hour >= 6 && hour < 14 ? "MORNING" : hour >= 14 && hour < 22 ? "AFTERNOON" : "NIGHT";
+    const shiftRes = await tx.query(
+      `SELECT break_minutes FROM shift_templates WHERE code = $1;`,
+      [event.payload?.shift || currentShift]
+    );
     if (shiftRes.rows.length > 0 && shiftRes.rows[0].break_minutes != null) {
       breakMinutes = Number(shiftRes.rows[0].break_minutes);
     }
@@ -622,27 +627,47 @@ export class DispatchService {
         [now, orderId]
       );
 
-      // If order targets a post, update post state and assignment
+      // If order targets a post, update post state via single entry point apply()
       if (order.to_post && effectiveGuardId) {
-        // Transition post to OCCUPIED
-        await tx.query(
-          `UPDATE post_state 
-           SET status = 'OCCUPIED', guard_id = $1, since = $2, deadline_at = NULL, version = version + 1 
-           WHERE post_id = $3;`,
-          [effectiveGuardId, now, order.to_post]
-        );
-
-        // Record state event
         const siteId = await this.getPrimarySiteId(tx);
-        await tx.query(
-          `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
-           VALUES ($1, $2, 'VACANT_ALERT', 'OCCUPIED', 'DISPATCH_ACKED', $3, $4, $5, clock_timestamp());`,
-          [siteId, order.to_post, effectiveGuardId, JSON.stringify({ orderId, kind: order.kind }), now]
-        );
+        const postStateRes = await tx.query(`SELECT status FROM post_state WHERE post_id = $1;`, [order.to_post]);
+        if (postStateRes.rows.length > 0 && postStateRes.rows[0].status === "NOT_ACTIVE") {
+          await this.apply(tx, {
+            kind: "SHIFT_START",
+            postId: order.to_post,
+            payload: { postActiveThisShift: true },
+            siteId,
+            simTs: now
+          });
+        }
+
+        await this.apply(tx, {
+          kind: "CHECKIN_ACCEPTED",
+          postId: order.to_post,
+          actorId: effectiveGuardId,
+          payload: { guardId: effectiveGuardId, orderId, kind: order.kind },
+          siteId,
+          simTs: now,
+          idemKey: order.idem_key ? `${order.idem_key}_ack` : undefined
+        });
 
         // Update or insert assignment
         const shiftParts = order.shift_key.split(":");
         const shiftCode = shiftParts[1] || "MORNING";
+
+        const shiftTplRes = await tx.query(
+          `SELECT start_time, end_time FROM shift_templates WHERE code = $1;`,
+          [shiftCode]
+        );
+        let shiftDurationMinutes = 480;
+        if (shiftTplRes.rows.length > 0) {
+          const [sh, sm] = shiftTplRes.rows[0].start_time.split(":").map(Number);
+          const [eh, em] = shiftTplRes.rows[0].end_time.split(":").map(Number);
+          let diffMin = (eh * 60 + em) - (sh * 60 + sm);
+          if (diffMin <= 0) diffMin += 24 * 60;
+          shiftDurationMinutes = diffMin;
+        }
+
         const existingAssign = await tx.query(
           `SELECT id FROM assignments 
            WHERE guard_id = $1 AND shift = $2 AND status = 'ACTIVE' AND period @> $3::timestamptz;`,
@@ -657,8 +682,8 @@ export class DispatchService {
         } else {
           await tx.query(
             `INSERT INTO assignments (guard_id, post_id, role, shift, period, source, status)
-             VALUES ($1, $2, 'FIXED', $3, tstzrange($4, ($4::timestamptz + interval '8 hours'), '[)'), 'DISPATCH', 'ACTIVE');`,
-            [effectiveGuardId, order.to_post, shiftCode, now]
+             VALUES ($1, $2, 'FIXED', $3, tstzrange($4, ($4::timestamptz + ($5 || ' minutes')::interval), '[)'), 'DISPATCH', 'ACTIVE');`,
+            [effectiveGuardId, order.to_post, shiftCode, now, shiftDurationMinutes]
           );
         }
       }
@@ -854,30 +879,49 @@ export class DispatchService {
     return await this.db.transaction(async (tx) => {
       const siteId = await this.getPrimarySiteId(tx);
 
-      // Update post state to OCCUPIED
-      await tx.query(
-        `UPDATE post_state 
-         SET status = 'OCCUPIED', guard_id = $1, since = $2, deadline_at = NULL, version = version + 1 
-         WHERE post_id = $3;`,
-        [dto.guardId, now, dto.postId]
-      );
-
-      // Append state event
-      await tx.query(
-        `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
-         VALUES ($1, $2, 'VACANT_ALERT', 'OCCUPIED', 'REPLACEMENT_ASSIGNED', $3, $4, $5, clock_timestamp());`,
-        [
+      const postStateRes = await tx.query(`SELECT status FROM post_state WHERE post_id = $1;`, [dto.postId]);
+      if (postStateRes.rows.length > 0 && postStateRes.rows[0].status === "NOT_ACTIVE") {
+        await this.apply(tx, {
+          kind: "SHIFT_START",
+          postId: dto.postId,
+          payload: { postActiveThisShift: true },
           siteId,
-          dto.postId,
-          dispatcherId || null,
-          JSON.stringify({ override: true, reason: dto.reason, legalWarning }),
-          now
-        ]
-      );
+          simTs: now
+        });
+      }
+
+      // Update post state via single entry point apply()
+      await this.apply(tx, {
+        kind: "CHECKIN_ACCEPTED",
+        postId: dto.postId,
+        actorId: dto.guardId,
+        payload: {
+          guardId: dto.guardId,
+          override: true,
+          reason: dto.reason,
+          legalWarning,
+          dispatcherId
+        },
+        siteId,
+        simTs: now
+      });
 
       // Update or insert assignment
       const shiftParts = dto.shiftKey.split(":");
       const shiftCode = shiftParts[1] || "MORNING";
+
+      const shiftTplRes = await tx.query(
+        `SELECT start_time, end_time FROM shift_templates WHERE code = $1;`,
+        [shiftCode]
+      );
+      let shiftDurationMinutes = 480;
+      if (shiftTplRes.rows.length > 0) {
+        const [sh, sm] = shiftTplRes.rows[0].start_time.split(":").map(Number);
+        const [eh, em] = shiftTplRes.rows[0].end_time.split(":").map(Number);
+        let diffMin = (eh * 60 + em) - (sh * 60 + sm);
+        if (diffMin <= 0) diffMin += 24 * 60;
+        shiftDurationMinutes = diffMin;
+      }
 
       const existingAssign = await tx.query(
         `SELECT id FROM assignments 
@@ -893,8 +937,8 @@ export class DispatchService {
       } else {
         await tx.query(
           `INSERT INTO assignments (guard_id, post_id, role, shift, period, source, status)
-           VALUES ($1, $2, 'FIXED', $3, tstzrange($4, ($4::timestamptz + interval '8 hours'), '[)'), 'MANUAL', 'ACTIVE');`,
-          [dto.guardId, dto.postId, shiftCode, now]
+           VALUES ($1, $2, 'FIXED', $3, tstzrange($4, ($4::timestamptz + ($5 || ' minutes')::interval), '[)'), 'MANUAL', 'ACTIVE');`,
+          [dto.guardId, dto.postId, shiftCode, now, shiftDurationMinutes]
         );
       }
 

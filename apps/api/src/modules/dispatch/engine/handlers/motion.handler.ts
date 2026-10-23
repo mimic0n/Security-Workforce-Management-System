@@ -3,6 +3,7 @@ import { PoolClient } from "pg";
 import { Clock } from "@swms/contracts";
 import { CLOCK_TOKEN } from "../../../../core/clock/clock.interface.js";
 import { DatabaseService } from "../../../../core/database/database.service.js";
+import { ConfigService } from "../../../policies/config.service.js";
 import { RankingService } from "../ranking.service.js";
 import { OutboxService } from "../../outbox.service.js";
 
@@ -21,7 +22,8 @@ export class MotionHandler {
     @Inject(DatabaseService) private readonly db: DatabaseService,
     @Inject(RankingService) private readonly rankingService: RankingService,
     @Inject(OutboxService) private readonly outboxService: OutboxService,
-    @Inject(CLOCK_TOKEN) private readonly clock: Clock
+    @Inject(CLOCK_TOKEN) private readonly clock: Clock,
+    @Optional() @Inject(ConfigService) private readonly configService?: ConfigService
   ) {}
 
   async handle(
@@ -34,9 +36,24 @@ export class MotionHandler {
 
     // 1. Find on-duty guards who can respond:
     // Prefer: supervisor or float, OR guards on Tier 2 posts.
-    // If night shift and G1 guard is designated (scenario D1 specifies G1 guard for G5 if night):
+    // Read dynamic policy for Tier 1 posts allowed to review motion (e.g. night G1 per policy)
     const shiftParts = payload.shiftKey.split(":");
     const forShift = shiftParts[1] || "NIGHT";
+
+    let allowedTier1Posts: string[] = [];
+    if (this.configService) {
+      try {
+        const motionPolicy = await this.configService.get<Record<string, string[]>>(
+          "dispatch.motion_allow_tier1_posts",
+          now
+        );
+        if (motionPolicy && Array.isArray(motionPolicy[forShift])) {
+          allowedTier1Posts = motionPolicy[forShift];
+        }
+      } catch {
+        // Fallback if policy not present
+      }
+    }
 
     // Query on-duty guards with their current post & tier
     const candidateRes = await client.query(
@@ -75,13 +92,12 @@ export class MotionHandler {
       });
     }
 
-    // Add guards on Tier 2 posts (allowed to move/investigate)
+    // Add guards on Tier 2 posts (or Tier 1 posts allowed by policy)
     for (const r of candidateRes.rows) {
       const isT1 = r.tier === "TIER1";
-      // In scenario D1, night shift at G5 explicitly targets G1 guard
-      const isAllowedG1 = r.post_id === "G1" && forShift === "NIGHT";
+      const isAllowedByPolicy = isT1 && allowedTier1Posts.includes(r.post_id);
 
-      if (!isT1 || isAllowedG1) {
+      if (!isT1 || isAllowedByPolicy) {
         const dispatches = await this.rankingService.getDispatchesToday(Number(r.id), shiftParts[0], client);
         eligibleGuards.push({
           id: Number(r.id),
@@ -171,8 +187,10 @@ export class MotionHandler {
     return {
       orderId,
       incidentId,
+      orderKind: "REVIEW_MOTION",
       guardId: winner.id,
-      postId: payload.postId
+      postId: payload.postId,
+      targetPost: payload.postId
     };
   }
 }

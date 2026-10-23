@@ -1,4 +1,4 @@
-import { Injectable, Inject, Optional } from "@nestjs/common";
+import { Injectable, Inject, Optional, forwardRef } from "@nestjs/common";
 import { PoolClient } from "pg";
 import { Clock } from "@swms/contracts";
 import { CLOCK_TOKEN } from "../../../../core/clock/clock.interface.js";
@@ -8,6 +8,7 @@ import { MealPlannerService } from "../../meal-planner/meal-planner.service.js";
 import { LegalGuardService } from "../../legal-guard/legal-guard.service.js";
 import { RankingService } from "../ranking.service.js";
 import { CandidateGuard } from "../types.js";
+import { DispatchService } from "../../dispatch.service.js";
 
 export interface AbsencePayload {
   guardId: number;
@@ -26,7 +27,8 @@ export class AbsenceHandler {
     @Inject(MealPlannerService) private readonly mealPlannerService: MealPlannerService,
     @Inject(LegalGuardService) private readonly legalGuardService: LegalGuardService,
     @Inject(RankingService) private readonly rankingService: RankingService,
-    @Inject(CLOCK_TOKEN) private readonly clock: Clock
+    @Inject(CLOCK_TOKEN) private readonly clock: Clock,
+    @Optional() @Inject(forwardRef(() => DispatchService)) private readonly dispatchService?: DispatchService
   ) {}
 
   async handle(
@@ -114,25 +116,37 @@ export class AbsenceHandler {
 
     // 3. Case A: Guard was assigned to a post -> Post is now vacant!
     if (assignedPostId) {
-      // Transition post to VACANT_ALERT
-      await client.query(
-        `UPDATE post_state 
-         SET status = 'VACANT_ALERT', guard_id = NULL, since = $1, deadline_at = NULL, version = version + 1 
-         WHERE post_id = $2;`,
-        [now, assignedPostId]
-      );
-
-      await client.query(
-        `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
-         VALUES ($1, $2, 'OCCUPIED', 'VACANT_ALERT', 'ABSENCE_REPORTED', $3, $4, $5, clock_timestamp());`,
-        [
+      // Transition post to VACANT_ALERT via single entry point apply()
+      if (this.dispatchService) {
+        await this.dispatchService.apply(client, {
+          kind: "ABSENCE_REPORTED",
+          postId: assignedPostId,
+          actorId: payload.guardId,
+          payload: { reason: payload.reason, absenceId },
           siteId,
-          assignedPostId,
-          payload.guardId,
-          JSON.stringify({ reason: payload.reason, absenceId }),
-          now
-        ]
-      );
+          simTs: now,
+          idemKey: options?.idemKey ? `${options.idemKey}_abs_${assignedPostId}` : undefined
+        });
+      } else {
+        await client.query(
+          `UPDATE post_state 
+           SET status = 'VACANT_ALERT', guard_id = NULL, since = $1, deadline_at = NULL, version = version + 1 
+           WHERE post_id = $2;`,
+          [now, assignedPostId]
+        );
+
+        await client.query(
+          `INSERT INTO state_events (site_id, post_id, from_status, to_status, cause, actor_id, payload, sim_ts, real_ts)
+           VALUES ($1, $2, 'OCCUPIED', 'VACANT_ALERT', 'ABSENCE_REPORTED', $3, $4, $5, clock_timestamp());`,
+          [
+            siteId,
+            assignedPostId,
+            payload.guardId,
+            JSON.stringify({ reason: payload.reason, absenceId }),
+            now
+          ]
+        );
+      }
 
       // Call fillVacancy cascade for this post
       const fillResult = await this.fillVacancyService.fillVacancy(client, {
@@ -182,8 +196,22 @@ export class AbsenceHandler {
         const rejected: Array<{ guardId: number; role?: string; reason: string }> = [];
         const eligibleCandidates: Array<{ candidate: CandidateGuard; estimatedCost: number }> = [];
 
+        // Look up shift template for duration
+        const shiftTplRes = await client.query(
+          `SELECT start_time, end_time FROM shift_templates WHERE code = $1;`,
+          [payload.shift]
+        );
+        let shiftDurationMinutes = 480;
+        if (shiftTplRes.rows.length > 0) {
+          const [sh, sm] = shiftTplRes.rows[0].start_time.split(":").map(Number);
+          const [eh, em] = shiftTplRes.rows[0].end_time.split(":").map(Number);
+          let diffMin = (eh * 60 + em) - (sh * 60 + sm);
+          if (diffMin <= 0) diffMin += 24 * 60;
+          shiftDurationMinutes = diffMin;
+        }
+
         const proposedStart = now;
-        const proposedEnd = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+        const proposedEnd = new Date(now.getTime() + shiftDurationMinutes * 60 * 1000);
 
         for (const row of offShiftRes.rows) {
           const gId = Number(row.id);

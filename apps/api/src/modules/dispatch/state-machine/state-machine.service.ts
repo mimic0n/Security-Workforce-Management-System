@@ -142,7 +142,7 @@ export class StateMachineService {
         break;
 
       case "MERGE_WITH_PAIR":
-        nextGuardId = event.payload?.pairGuardId ?? null;
+        nextGuardId = event.payload?.pairGuardId ?? event.payload?.guardId ?? null;
         nextDeadlineAt = null;
         break;
 
