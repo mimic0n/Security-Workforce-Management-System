@@ -22,7 +22,25 @@ export const MobileGuardApp: React.FC<MobileGuardAppProps> = ({
   const effectiveGuardId = queryParams?.get("guardId") ? Number(queryParams.get("guardId")) : guardId;
   const effectivePostId = queryParams?.get("postId") || initialPostId;
 
-  const [authToken] = useState<string | null>(effectiveToken);
+  const [authToken, setAuthToken] = useState<string | null>(effectiveToken);
+
+  useEffect(() => {
+    if (!authToken) {
+      // Auto-authenticate as default guard for development / demo view
+      fetch(`${effectiveApiUrl}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "guard_g01", password: "password123" })
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.accessToken) {
+            setAuthToken(data.accessToken);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [authToken, effectiveApiUrl]);
   const [postId, setPostId] = useState(effectivePostId);
   const [shift] = useState(initialShift);
   const [isCheckedIn, setIsCheckedIn] = useState(true);

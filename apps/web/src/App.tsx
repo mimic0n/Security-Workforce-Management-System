@@ -22,7 +22,28 @@ export const App: React.FC<AppProps> = ({
   const effectiveApiUrl = queryParams?.get("apiUrl") || apiUrl;
   const effectiveToken = queryParams?.get("token") || token;
 
-  const [authToken] = useState<string | null>(effectiveToken);
+  const [authToken, setAuthToken] = useState<string | null>(effectiveToken);
+
+  React.useEffect(() => {
+    if (!authToken) {
+      // Auto-authenticate as default dispatcher for development / demo view
+      fetch(`${effectiveApiUrl}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "dispatcher", password: "password123" })
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.accessToken) {
+            setAuthToken(data.accessToken);
+          }
+        })
+        .catch(() => {
+          // Keep offline if server is unreachable
+        });
+    }
+  }, [authToken, effectiveApiUrl]);
+
   const { posts, siteMode, kpi, incidents, connected, setSiteMode } =
     useRealtimeState(effectiveApiUrl, authToken);
 

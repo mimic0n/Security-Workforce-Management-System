@@ -1,32 +1,32 @@
 {
   "id": "B1",
   "title": "Present 45 of 60 across the week",
-  "passed": true,
-  "startedAt": "2026-11-07T07:41:00.000Z",
-  "finishedAt": "2026-11-01T23:00:00.000Z",
-  "durationMs": -463260000,
+  "passed": false,
+  "startedAt": "2026-10-23T23:33:57.990Z",
+  "finishedAt": "2026-10-23T23:33:58.143Z",
+  "durationMs": 153,
   "assertions": [
     {
       "assert": "tier1.all_staffed",
-      "passed": true,
+      "passed": false,
       "expected": true,
-      "actual": true,
+      "actual": false,
       "message": "",
       "description": "7 Tier-1 posts fully staffed in every shift of a simulated week"
     },
     {
       "assert": "tier2.merged_pairs_count",
-      "passed": true,
+      "passed": false,
       "expected": 3,
-      "actual": 3,
+      "actual": 0,
       "message": "",
       "description": "3 Tier-2 pairs merged (P3->P2, P4->P5, G2->G3)"
     },
     {
       "assert": "staffing_requests.qty",
-      "passed": true,
+      "passed": false,
       "expected": 15,
-      "actual": 15,
+      "actual": 1,
       "message": "",
       "description": "staffing_requests created with qty = gap (15)"
     },
