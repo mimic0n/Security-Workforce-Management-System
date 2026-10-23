@@ -104,3 +104,18 @@
   - `GET /state/snapshot` delivers `{ site, posts, lastSeq }`, querying current sequence state via `SELECT last_value, is_called FROM site_event_seq;` to provide reconnecting clients with the exact sequence marker for sync.
 
 
+
+### 2.10 LegalGuard & Meal Planner (M5)
+- **Active Relief Float Pool Selection**:
+  - In `MealPlannerService.generateAndPersistPlan`, when `availableFloatIds` is not explicitly provided, the number of active floats queried from the database (`role = 'FLOAT'`, `float_kind = 'TIER1_RELIEF'`) is dynamically bounded by policy `headcount.float_t1[shiftCode]` (default 2 for MORNING/AFTERNOON, 0 for NIGHT).
+- **Initial Positioning and Staggering**:
+  - Floats on duty prior to the meal window (e.g. from shift start 06:00) travel and perform handover during the `[slot.start - handoverBufferMin, slot.start]` interval.
+  - Stagger of 20 min applies to the first 2 posts (`window.start + 0 min` for Float A at post 0, `window.start + 20 min` for Float B at post 1), smoothly staggering breaks across the floor. Subsequent posts (index >= 2) start as soon as the float completes the previous assignment, travels, and performs the handover buffer (`max(cursor + travel + handover, window.start)`).
+- **Slot Job Scheduling & Dispatch Handshake**:
+  - For each planned break slot in `break_plans`, a job is registered with `ScheduledJobsService` (and injected `Clock.schedule`) targeting `runAt = slot.start - handoverBufferMin`.
+  - When the timer fires, `DispatchService.applyWithRetry()` applies event `MEAL_WINDOW_OPEN`, transitioning the post from `OCCUPIED` to `HANDOVER_PENDING`, locking the original guard's break button and alerting the incoming float.
+- **Overtime Calculation for LegalGuard**:
+  - Any assignment segment flagged `isOvertime: true` or duration exceeding standard 8h shift (480 minutes) accumulates into projected monthly/yearly OT minutes.
+  - Candidates exceeding `legal.ot_cap_month_min` (2400 min / 40h) or `legal.ot_cap_year_min` (12000 min / 200h) are rejected with `MONTHLY_OT_CAP_EXCEEDED` / `YEARLY_OT_CAP_EXCEEDED`.
+- **Cost Estimation Multipliers**:
+  - Cost helper evaluates hourly slices: standard day hours (1.0x), night hours 22:00–06:00 (1.3x), day overtime (1.5x), and night overtime (2.0x), matching Labor Code guidance and spec §9 rule 6.

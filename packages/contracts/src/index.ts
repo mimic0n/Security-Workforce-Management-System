@@ -174,4 +174,6 @@ export * from "./policies.js";
 export * from "./audit.js";
 export * from "./staffing.js";
 export * from "./state-machine.js";
+export * from "./meal-planner.js";
+export * from "./legal-guard.js";
 
